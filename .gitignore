@@ -1,0 +1,10 @@
+__pycache__
+build*/
+_build*/
+.vscode
+.DS_Store
+.claude/
+CLAUDE.md
+**/*.log
+.venv/
+local/

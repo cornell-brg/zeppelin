@@ -1,0 +1,665 @@
+//========================================================================
+// SSROB_test.v
+//========================================================================
+// A testbench for our SSROB
+
+`include "hw/writeback_commit/SSROB.v"
+`include "hw/writeback_commit/test/coverage/SSROBCoverage.v"
+`include "test/fl/TestMCaller.v"
+`include "test/TestUtils.v"
+
+import TestEnv::*;
+
+//========================================================================
+// SSROBTestSuite
+//========================================================================
+// A test suite for the SSROB
+
+module SSROBTestSuite #(
+  parameter p_suite_num = 0,
+  parameter p_msg_bits  = 32,
+  parameter p_depth     = 4,
+  parameter p_num_lanes = 2
+);
+
+  localparam p_addr_bits = $clog2( p_depth );
+  
+  string suite_name = $sformatf("%0d: SSROBTestSuite_%d_%0d", 
+                                p_suite_num, p_msg_bits, p_depth);
+
+  //----------------------------------------------------------------------
+  // Setup
+  //----------------------------------------------------------------------
+
+  logic clk, rst;
+  TestUtils t( .* );
+
+  //----------------------------------------------------------------------
+  // Instantiate design under test
+  //----------------------------------------------------------------------
+
+  logic [p_addr_bits-1:0] dut_ins_idx     [p_num_lanes];
+  logic [ p_msg_bits-1:0] dut_ins_msg     [p_num_lanes];
+  logic                   dut_ins_msg_val [p_num_lanes];
+  logic                   dut_ins_rdy;
+  logic                   dut_ins_en;
+  logic [p_addr_bits:0]   dut_avail_slots;
+
+  logic [p_addr_bits-1:0] dut_deq_idx     [p_num_lanes];
+  logic [ p_msg_bits-1:0] dut_deq_msg     [p_num_lanes];
+  logic                   dut_deq_msg_val [p_num_lanes];
+  logic                   dut_deq_en;
+  logic                   dut_deq_rdy;
+
+  SSROB #(
+    .p_msg_bits  (p_msg_bits),
+    .p_depth     (p_depth),
+    .p_num_lanes (p_num_lanes)
+  ) dut (
+    .clk         (clk),
+    .rst         (rst),
+    
+    .ins_idx     (dut_ins_idx),
+    .ins_msg     (dut_ins_msg),
+    .ins_msg_val (dut_ins_msg_val),
+    .ins_en      (dut_ins_en),
+    .ins_rdy     (dut_ins_rdy),
+    .avail_slots (dut_avail_slots),
+
+    .deq_idx     (dut_deq_idx),
+    .deq_msg     (dut_deq_msg),
+    .deq_msg_val (dut_deq_msg_val),
+    .deq_en      (dut_deq_en),
+    .deq_rdy     (dut_deq_rdy)
+  );
+
+  //----------------------------------------------------------------------
+  // Setup for functional coverage
+  //----------------------------------------------------------------------
+
+  SSROBCoverage #(
+    .p_msg_bits  (p_msg_bits),
+    .p_depth     (p_depth),
+    .p_num_lanes (p_num_lanes)
+  ) Coverage (
+    .clk         (clk),
+    .rst         (rst),
+    
+    .ins_idx     (dut_ins_idx),
+    .ins_msg     (dut_ins_msg),
+    .ins_msg_val (dut_ins_msg_val),
+    .ins_en      (dut_ins_en),
+    .ins_rdy     (dut_ins_rdy),
+    .avail_slots (dut_avail_slots),
+
+    .deq_idx     (dut_deq_idx),
+    .deq_msg     (dut_deq_msg),
+    .deq_msg_val (dut_deq_msg_val),
+    .deq_en      (dut_deq_en),
+    .deq_rdy     (dut_deq_rdy),
+
+    .deq_ptr     (dut.deq_ptr),
+    .can_bypass  (dut.can_bypass)
+  );
+
+  //----------------------------------------------------------------------
+  // Insertion
+  //----------------------------------------------------------------------
+
+  // Veri..ator does not like unpacked arrays in structs, we need to use
+  // the TestMCaller instead of TestCaller for compatibility
+  typedef struct packed {
+    logic [ p_msg_bits-1:0] msg;
+    logic [p_addr_bits-1:0] idx;
+    logic                   val;
+  } t_ins_msg;
+
+  t_ins_msg ins_msg [p_num_lanes];
+
+  genvar i;
+  generate
+    for( i = 0; i < p_num_lanes; i++ ) begin : GEN_INS_MSG
+      assign dut_ins_msg[i]     = ins_msg[i].msg;
+      assign dut_ins_idx[i]     = ins_msg[i].idx;
+      assign dut_ins_msg_val[i] = ins_msg[i].val;
+    end
+  endgenerate
+
+  // Unused output message
+  logic unused_dut_ins_output [p_num_lanes];
+  generate
+    for( i = 0; i < p_num_lanes; i++ )
+      assign unused_dut_ins_output[i] = 1'b1;
+  endgenerate
+
+  TestMCaller #(
+    .t_call_msg (t_ins_msg),
+    .t_ret_msg  (logic),
+    .p_num_msgs (p_num_lanes)
+  ) ins_caller (
+    .call_msg (ins_msg),
+    .ret_msg  (unused_dut_ins_output),
+    .en       (dut_ins_en),
+    .rdy      (dut_ins_rdy),
+    .*
+  );
+
+  t_ins_msg msg_to_send [p_num_lanes];
+
+  task send(
+    logic [ p_msg_bits-1:0] msg [p_num_lanes],
+    logic [p_addr_bits-1:0] idx [p_num_lanes],
+    logic                   val [p_num_lanes]
+  );
+    for( int i = 0; i < p_num_lanes; i++ ) begin
+      msg_to_send[i].msg = msg[i];
+      msg_to_send[i].idx = idx[i];
+      msg_to_send[i].val = val[i];
+    end
+
+    ins_caller.call(msg_to_send, unused_dut_ins_output, '{default: 1'b0});
+  endtask
+
+  //----------------------------------------------------------------------
+  // Dequeue
+  //----------------------------------------------------------------------
+
+  // Veri..ator does not like unpacked arrays in structs, we need to use
+  // the TestMCaller instead of TestCaller for compatibility
+  typedef struct packed {
+    logic [ p_msg_bits-1:0] msg;
+    logic [p_addr_bits-1:0] idx;
+    logic                   val;
+  } t_deq_msg;
+
+  t_deq_msg deq_msg [p_num_lanes];
+
+  generate
+    for( i = 0; i < p_num_lanes; i++ ) begin : GEN_DEQ_MSG
+      assign deq_msg[i].msg = dut_deq_msg[i];
+      assign deq_msg[i].idx = dut_deq_idx[i];
+      assign deq_msg[i].val = dut_deq_msg_val[i];
+    end
+  endgenerate
+
+  // Unused input message
+  logic unused_dut_deq_input [p_num_lanes];
+
+  TestMCaller #(
+    .t_call_msg (logic), 
+    .t_ret_msg  (t_deq_msg),
+    .p_num_msgs (p_num_lanes)
+  ) deq_caller (
+    .call_msg (unused_dut_deq_input),
+    .ret_msg  (deq_msg),
+    .en       (dut_deq_en),
+    .rdy      (dut_deq_rdy),
+    .*
+  );
+
+  t_deq_msg msg_to_recv [p_num_lanes];
+
+  task recv(
+    input logic [ p_msg_bits-1:0] msg [p_num_lanes],
+    input logic [p_addr_bits-1:0] idx [p_num_lanes],
+    input logic                   val [p_num_lanes]
+  );
+    for( int i = 0; i < p_num_lanes; i++ ) begin
+      msg_to_recv[i].msg = msg[i];
+      msg_to_recv[i].idx = idx[i];
+      msg_to_recv[i].val = val[i];
+    end
+
+    deq_caller.call('{default: 1'bx}, msg_to_recv, val);
+  endtask
+
+  //----------------------------------------------------------------------
+  // Linetracing
+  //----------------------------------------------------------------------
+
+  string trace;
+
+  // verilator lint_off BLKSEQ
+  always @( posedge clk ) begin
+    #2;
+    trace = "";
+
+    trace = {trace, ins_caller.trace( t.trace_level )};
+    trace = {trace, " | "};
+    trace = {trace, dut.trace( t.trace_level )};
+    trace = {trace, " | "};
+    trace = {trace, deq_caller.trace( t.trace_level )};
+
+    t.trace( trace );
+  end
+  // verilator lint_on BLKSEQ
+
+  //----------------------------------------------------------------------
+  // test_case_basic
+  //----------------------------------------------------------------------
+  // Enqueuing a message to the SSROB should also dequeue that message if
+  // the indices are in-order
+
+  task test_case_basic();
+    t.test_case_begin( "test_case_basic" );
+    if( !t.run_test ) return;
+
+    fork
+        //    msg                      idx                   val
+      begin
+        send( '{0:'hdead, default:'x}, '{0:'d0, default:'x}, '{0:'1, default:'0} );
+      end
+      begin
+        recv( '{0:'hdead, default:'x}, '{0:'d0, default:'x}, '{0:'1, default:'0} );
+      end
+    join
+
+    fork
+        //    msg                                idx             val
+      begin
+        send( '{0:'h1111, 1:'h2222, default:'x}, '{0:'d1, 1:'d2, default:'x}, '{0:'1, 1:'1, default:'0} );
+      end
+      begin
+        recv( '{0:'h1111, 1:'h2222, default:'x}, '{0:'d1, 1:'d2, default:'x}, '{0:'1, 1:'1, default:'0} );
+      end
+    join
+
+    fork
+        //    msg                      idx                   val
+      begin
+        send( '{0:'h1234, default:'x}, '{0:'d3, default:'x}, '{0:'1, default:'0} );
+      end
+      begin
+        recv( '{0:'h1234, default:'x}, '{0:'d3, default:'x}, '{0:'1, default:'0} );
+      end
+    join
+
+    t.test_case_end();
+  endtask
+
+  //----------------------------------------------------------------------
+  // test_case_capacity
+  //----------------------------------------------------------------------
+  // Enqueuing messages (to reach capacity) in-order should yield
+  // dequeuing of those messages in the same order
+
+  logic [ p_msg_bits-1:0] test_cap_msg [p_num_lanes];
+  logic [p_addr_bits-1:0] test_cap_idx [p_num_lanes];
+  logic                   test_cap_val [p_num_lanes];
+
+  task test_case_capacity();
+    t.test_case_begin( "test_case_capacity" );
+    if( !t.run_test ) return;
+
+    for( int i = 0; i < p_depth; i = i + p_num_lanes ) begin
+      // Enqueue using all lanes
+      for( int j = 0; j < p_num_lanes; j = j + 1 ) begin
+        test_cap_msg[j] = p_msg_bits'(i+j);
+        test_cap_idx[j] = p_addr_bits'(i+j);
+        // Do not overwrite an instruction that has already been written
+        test_cap_val[j] = ( (i+j) < p_depth );
+      end
+      send( test_cap_msg, test_cap_idx, test_cap_val );
+    end
+
+    for( int i = 0; i < p_depth; i = i + p_num_lanes ) begin
+      // Dequeue using all lanes
+      for( int j = 0; j < p_num_lanes; j = j + 1 ) begin
+        test_cap_msg[j] = p_msg_bits'(i+j);
+        test_cap_idx[j] = p_addr_bits'(i+j);
+        test_cap_val[j] = ( (i+j) < p_depth );
+      end
+      recv( test_cap_msg, test_cap_idx, test_cap_val );
+    end
+
+    t.test_case_end();
+  endtask
+
+  //----------------------------------------------------------------------
+  // test_case_out_of_order
+  //----------------------------------------------------------------------
+  // Enqueuing a number of messages out-of-order should result with 
+  // dequeuing of the same messages in-order
+
+  logic [ p_msg_bits-1:0] test_ooo_enq_msg [4];
+
+  logic [ p_msg_bits-1:0] test_ooo_deq_msg [p_num_lanes];
+  logic [p_addr_bits-1:0] test_ooo_deq_idx [p_num_lanes];
+  logic                   test_ooo_deq_val [p_num_lanes];
+
+  task test_case_out_of_order();
+    t.test_case_begin( "test_case_out_of_order" );
+    if( !t.run_test ) return;
+
+    test_ooo_enq_msg[0] = 'h1234;
+    test_ooo_enq_msg[1] = 'h8765;
+    test_ooo_enq_msg[2] = 'h0000;
+    test_ooo_enq_msg[3] = 'hFFFF;
+
+    fork
+      begin
+        //    msg                                                          idx                          val
+        send( '{0:test_ooo_enq_msg[3],                        default:'x}, '{0:'d3,        default:'x}, '{0:'1,       default:'0} );
+        send( '{0:test_ooo_enq_msg[1],                        default:'x}, '{0:'d1,        default:'x}, '{0:'1,       default:'0} );
+        send( '{0:test_ooo_enq_msg[2], 1:test_ooo_enq_msg[0], default:'x}, '{0:'d2, 1:'d0, default:'x}, '{0:'1, 1:'1, default:'0} );
+      end
+
+      begin
+        for( int i = 0; i < 4; i = i + p_num_lanes ) begin
+          // Must dequeue using all lanes
+          for( int j = 0; j < p_num_lanes; j = j + 1 ) begin
+            test_ooo_deq_msg[j] = test_ooo_enq_msg[(i+j)%4];
+            test_ooo_deq_idx[j] = p_addr_bits'(i+j);
+            test_ooo_deq_val[j] = ( (i+j) < 4 );
+          end
+          recv( test_ooo_deq_msg, test_ooo_deq_idx, test_ooo_deq_val );
+        end
+      end
+    join
+
+    t.test_case_end();
+  endtask
+
+  //----------------------------------------------------------------------
+  // test_case_wrap_around
+  //----------------------------------------------------------------------
+  // Enqueuing until the dequeue pointer reaches the depth of the SSROB
+  // should result in the dequeue pointer wrapping back around to the 
+  // start
+
+  logic [ p_msg_bits-1:0] test_wrap_msg [p_num_lanes];
+  logic [p_addr_bits-1:0] test_wrap_idx [p_num_lanes];
+  logic                   test_wrap_val [p_num_lanes];
+
+  logic [p_addr_bits-1:0] lane0_addr;
+  logic [p_addr_bits-1:0] lane1_addr;
+
+  task test_case_wrap_around();
+    t.test_case_begin( "test_case_wrap_around" );
+    if( !t.run_test ) return;
+
+    for( int i = 0; i < 10; i = i + 2 ) begin
+      //    msg                                                  idx                                                                        val
+      send( '{0:p_msg_bits'(i), 1:p_msg_bits'(i+1), default:'x}, '{0:p_addr_bits'((i)%p_depth), 1:p_addr_bits'((i+1)%p_depth), default:'x}, '{0:1, 1:1, default:0} );
+      recv( '{0:p_msg_bits'(i), 1:p_msg_bits'(i+1), default:'x}, '{0:p_addr_bits'((i)%p_depth), 1:p_addr_bits'((i+1)%p_depth), default:'x}, '{0:1, 1:1, default:0} );
+    end
+
+    t.test_case_end();
+  endtask
+
+  //----------------------------------------------------------------------
+  // test_case_random
+  //----------------------------------------------------------------------
+  // Randomization on message data, message indices, and message valid bits
+
+  typedef struct {
+    logic [ p_msg_bits-1:0] ins_msg     [p_num_lanes];
+    logic [p_addr_bits-1:0] ins_idx     [p_num_lanes];
+    logic                   ins_msg_val [p_num_lanes];
+    
+    logic [ p_msg_bits-1:0] deq_msg     [p_num_lanes];
+    logic [p_addr_bits-1:0] deq_idx     [p_num_lanes];
+    logic                   deq_msg_val [p_num_lanes];
+    logic                   deq_rdy;
+  } t_rand_test_intf;
+
+  typedef struct {
+    logic                  entries_val [p_depth];
+    logic [p_msg_bits-1:0] entries_msg [p_depth];
+    logic           [31:0] deq_ptr;
+  } t_ssrob_model;
+
+  logic [31:0] deq_ptr_next;
+  logic        prev_val;
+
+  t_ssrob_model model;
+  t_rand_test_intf test_rand;
+
+  task test_case_random();
+    t.test_case_begin( "test_case_random" );
+
+    // Initialize SSROB model to empty
+    model.deq_ptr = '0;
+    for( int i = 0; i < p_depth; i++ ) begin
+      model.entries_val[i] = 1'b0;
+    end
+
+    // Test loop
+    for( int i = 0; i < 100; i++ ) begin
+
+      // Determine the insert-side signals of the SSROB
+      for( int j = 0; j < p_num_lanes; j++ ) begin
+        // Generate random inputs for message and index
+        test_rand.ins_msg[j] = p_msg_bits'( $urandom() );
+        test_rand.ins_idx[j] = p_addr_bits'( $urandom() );
+
+        // Make the input valid only if the corresponding index in the model is invalid
+        test_rand.ins_msg_val[j] = !model.entries_val[test_rand.ins_idx[j]] & 1'( $urandom() );
+
+        // Update the SSROB model
+        if ( test_rand.ins_msg_val[j] ) begin
+          model.entries_val[test_rand.ins_idx[j]] = test_rand.ins_msg_val[j];
+          model.entries_msg[test_rand.ins_idx[j]] = test_rand.ins_msg[j];
+        end
+      end
+
+      // Initialize signals for the dequeue-side of the SSROB
+      prev_val = 1'b1;
+      test_rand.deq_rdy = 1'b0;
+      deq_ptr_next = model.deq_ptr;
+
+      // Determine the dequeue-side signals of the SSROB
+      for( int j = 0; j < p_num_lanes; j++ ) begin
+        // Determine the dequeue index
+        if ( (model.deq_ptr + j) < p_depth )
+          test_rand.deq_idx[j] = p_addr_bits'( model.deq_ptr + j );
+        else
+          test_rand.deq_idx[j] = p_addr_bits'( model.deq_ptr + j - p_depth );
+        
+        // Set the expected message and valid bits
+        test_rand.deq_msg[j] = model.entries_msg[test_rand.deq_idx[j]];
+        test_rand.deq_msg_val[j] = prev_val & model.entries_val[test_rand.deq_idx[j]];
+
+        // Update dequeue ready and the dequeue pointer if there is a valid message to dequeue
+        if ( test_rand.deq_msg_val[j] ) begin
+          test_rand.deq_rdy = 1'b1;
+          if ( (deq_ptr_next + 1) < p_depth )
+            deq_ptr_next = deq_ptr_next + 1'b1;
+          else
+            deq_ptr_next = '0;
+        end
+
+        // Update the previously valid signal
+        prev_val = test_rand.deq_msg_val[j];
+
+        // Update the SSROB model
+        if ( test_rand.deq_msg_val[j] ) begin
+          model.entries_val[test_rand.deq_idx[j]] = 1'b0;
+        end
+      end
+      
+      // Insert to SSROB
+      send( test_rand.ins_msg, test_rand.ins_idx, test_rand.ins_msg_val );
+      // Dequeue from SSROB if ready to dequeue
+      if ( test_rand.deq_rdy ) begin
+        recv( test_rand.deq_msg, test_rand.deq_idx, test_rand.deq_msg_val );
+        model.deq_ptr = deq_ptr_next;
+      end
+      else
+        #10;
+
+      // fork
+      //   begin
+      //     // Insert to SSROB
+      //     send( test_rand.ins_msg, test_rand.ins_idx, test_rand.ins_msg_val );
+      //   end
+
+      //   begin
+      //     // Dequeue from SSROB if ready to dequeue
+      //     if ( test_rand.deq_rdy ) begin
+      //       recv( test_rand.deq_msg, test_rand.deq_idx, test_rand.deq_msg_val );
+      //       model.deq_ptr = deq_ptr_next;
+      //     end
+      //     else
+      //       #10;
+      //   end
+      // join
+    end
+
+    t.test_case_end();
+  endtask
+
+  //----------------------------------------------------------------------
+  // test_case_random_aggressive
+  //----------------------------------------------------------------------
+  // Randomization on message data and message indices. If the message can 
+  // be valid, the test case sets it that way. If not, the test case keeps
+  // randomizing the index to attempt to find one that has not yet been 
+  // written.
+
+  integer k;
+
+  task test_case_random_aggressive();
+    t.test_case_begin( "test_case_random_aggressive" );
+
+    // Initialize SSROB model to empty
+    model.deq_ptr = '0;
+    for( int i = 0; i < p_depth; i++ ) begin
+      model.entries_val[i] = 1'b0;
+    end
+
+    // Test loop
+    for( int i = 0; i < 100; i++ ) begin
+
+      // Determine the insert-side signals of the SSROB
+      for( int j = 0; j < p_num_lanes; j++ ) begin
+        // Generate random inputs for message and index
+        test_rand.ins_msg[j] = p_msg_bits'( $urandom() );
+        test_rand.ins_idx[j] = p_addr_bits'( $urandom() );
+
+        // Keep randomizing the index if the current index is not yet dequeued
+        k = 0;
+        while( (k < 10) && model.entries_val[test_rand.ins_idx[j]] ) begin
+          test_rand.ins_idx[j] = p_addr_bits'( $urandom() );
+          k = k + 1;
+        end
+
+        // Make the input valid only if the corresponding index in the model is invalid
+        test_rand.ins_msg_val[j] = !model.entries_val[test_rand.ins_idx[j]];
+
+        // Update the SSROB model
+        if ( test_rand.ins_msg_val[j] ) begin
+          model.entries_val[test_rand.ins_idx[j]] = test_rand.ins_msg_val[j];
+          model.entries_msg[test_rand.ins_idx[j]] = test_rand.ins_msg[j];
+        end
+      end
+
+      // Initialize signals for the dequeue-side of the SSROB
+      prev_val = 1'b1;
+      test_rand.deq_rdy = 1'b0;
+      deq_ptr_next = model.deq_ptr;
+
+      // Determine the dequeue-side signals of the SSROB
+      for( int j = 0; j < p_num_lanes; j++ ) begin
+        // Determine the dequeue index
+        if ( (model.deq_ptr + j) < p_depth )
+          test_rand.deq_idx[j] = p_addr_bits'( model.deq_ptr + j );
+        else
+          test_rand.deq_idx[j] = p_addr_bits'( model.deq_ptr + j - p_depth );
+        
+        // Set the expected message and valid bits
+        test_rand.deq_msg[j] = model.entries_msg[test_rand.deq_idx[j]];
+        test_rand.deq_msg_val[j] = prev_val & model.entries_val[test_rand.deq_idx[j]];
+
+        // Update dequeue ready and the dequeue pointer if there is a valid message to dequeue
+        if ( test_rand.deq_msg_val[j] ) begin
+          test_rand.deq_rdy = 1'b1;
+          if ( (deq_ptr_next + 1) < p_depth )
+            deq_ptr_next = deq_ptr_next + 1'b1;
+          else
+            deq_ptr_next = '0;
+        end
+
+        // Update the previously valid signal
+        prev_val = test_rand.deq_msg_val[j];
+
+        // Update the SSROB model
+        if ( test_rand.deq_msg_val[j] ) begin
+          model.entries_val[test_rand.deq_idx[j]] = 1'b0;
+        end
+      end
+
+      // Insert to SSROB
+      send( test_rand.ins_msg, test_rand.ins_idx, test_rand.ins_msg_val );
+      // Dequeue from SSROB if ready to dequeue
+      if ( test_rand.deq_rdy ) begin
+        recv( test_rand.deq_msg, test_rand.deq_idx, test_rand.deq_msg_val );
+        model.deq_ptr = deq_ptr_next;
+      end
+      else
+        #10;
+
+      // fork
+      //   begin
+      //     // Insert to SSROB
+      //     send( test_rand.ins_msg, test_rand.ins_idx, test_rand.ins_msg_val );
+      //   end
+
+      //   begin
+      //     // Dequeue from SSROB if ready to dequeue
+      //     if ( test_rand.deq_rdy ) begin
+      //       recv( test_rand.deq_msg, test_rand.deq_idx, test_rand.deq_msg_val );
+      //       model.deq_ptr = deq_ptr_next;
+      //     end
+      //     else
+      //       #10;
+      //   end
+      // join
+    end
+
+    t.test_case_end();
+  endtask
+
+  //----------------------------------------------------------------------
+  // run_test_suite
+  //----------------------------------------------------------------------
+
+  task run_test_suite();
+    t.test_suite_begin( suite_name );
+
+    test_case_basic();
+    test_case_capacity();
+    test_case_out_of_order();
+    test_case_wrap_around();
+    test_case_random();
+    test_case_random_aggressive();
+  endtask
+
+endmodule
+
+//========================================================================
+// SSROB_test
+//========================================================================
+
+module SSROB_test;
+  //              suite msg        num
+  //              num   bits depth lanes
+  SSROBTestSuite #(1)                     suite_1();
+  SSROBTestSuite #(2,    16)              suite_2();
+  SSROBTestSuite #(3,    32,   8,   3)    suite_3();
+  SSROBTestSuite #(4,    32,  16,   4)    suite_4();
+
+  int s;
+
+  initial begin
+    test_bench_begin( `__FILE__ );
+    s = get_test_suite();
+
+    if ((s <= 0) || (s == 1)) suite_1.run_test_suite();
+    if ((s <= 0) || (s == 2)) suite_2.run_test_suite();
+    if ((s <= 0) || (s == 3)) suite_3.run_test_suite();
+    if ((s <= 0) || (s == 4)) suite_4.run_test_suite();
+
+    test_bench_end();
+  end
+endmodule

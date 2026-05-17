@@ -1,0 +1,393 @@
+//========================================================================
+// SeqNumGen.v
+//========================================================================
+// A module for generating and managing sequence numbers with ctrl_flowing and
+// support for superscalar backend. p_num_fe_lanes sequence numbers will be
+// allocated at once
+
+`ifndef HW_FETCH_SEQNUMGEN_V
+`define HW_FETCH_SEQNUMGEN_V
+
+`include "hw/util/SSSeqAge.v"
+`include "intf/CommitNotif.v"
+`include "intf/ControlFlowNotif.v"
+
+module SeqNumGen #(
+  parameter p_seq_num_bits  = 5,
+  parameter p_num_phys_regs = 36,
+  parameter p_reclaim_width = 2,
+  parameter p_num_fe_lanes  = 2,
+  parameter p_num_be_lanes  = 2
+)(
+  input  logic clk,
+  input  logic rst,
+
+  //----------------------------------------------------------------------
+  // Allocation Interface
+  //----------------------------------------------------------------------
+
+  // allocate seq num for each trying lane, alloc_rdy is set for lanes that
+  // can allocate, alloc_val is set by consumer to confirm allocation
+  output logic [p_seq_num_bits-1:0] alloc_seq_num [p_num_fe_lanes],
+  input  logic                      alloc_try     [p_num_fe_lanes],
+  input  logic                      alloc_val     [p_num_fe_lanes],
+  output logic                      alloc_rdy     [p_num_fe_lanes],
+
+  //----------------------------------------------------------------------
+  // Commit Interface to free sequence numbers
+  //----------------------------------------------------------------------
+
+  CommitNotif.sub commit [p_num_be_lanes],
+
+  //----------------------------------------------------------------------
+  // CtrlFlow Interface
+  //----------------------------------------------------------------------
+
+  ControlFlowNotif.sub ctrl_flow
+);
+
+  localparam p_num_entries = 2 ** p_seq_num_bits;
+  localparam p_num_fe_lanes_bits = p_num_fe_lanes > 1 ? $clog2(p_num_fe_lanes) : 1;
+
+  logic [p_seq_num_bits-1:0] commit_seq_num [p_num_be_lanes];
+  genvar i;
+  generate
+    for( i = 0; i < p_num_be_lanes; i++ ) begin: COMMIT_SEQ_NUM_ASSIGN
+      assign commit_seq_num[i] = commit[i].seq_num;
+    end
+  endgenerate
+
+  //----------------------------------------------------------------------
+  // Age Logic
+  //----------------------------------------------------------------------
+  // Need to keep track to know which to free on a ctrl_flow
+
+  logic [p_seq_num_bits-1:0] oldest_seq_num;
+
+  SSSeqAge #(
+    .p_num_be_lanes (p_num_be_lanes),
+    .p_seq_num_bits (p_seq_num_bits),
+    .p_num_phys_regs (p_num_phys_regs)
+  ) seq_age (
+    .*
+  );
+  
+  //----------------------------------------------------------------------
+  // Sequence Number List
+  //----------------------------------------------------------------------
+  // Keep track of which ones are allocated
+
+  localparam ALLOC = 1'b1;
+  localparam FREE  = 1'b0;
+
+  logic seq_num_list [p_num_entries];
+  logic [p_seq_num_bits:0] curr_head_ptr, curr_tail_ptr;
+  logic is_alloc [p_num_fe_lanes];
+  logic [p_num_be_lanes-1:0] is_free;
+
+  generate
+    for( i = 0; i < p_num_entries; i++ ) begin: SEQ_NUM
+      always_ff @( posedge clk ) begin
+        if( rst ) seq_num_list[i] <= 1'b0;
+        else begin
+
+          // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+          // Allocation
+          // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+          for( int j = 0; j < p_num_fe_lanes; j++ ) begin
+            if( alloc_val[j] & ( alloc_seq_num[j] == i ) )
+              seq_num_list[i] <= ALLOC;
+          end
+
+          // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+          // Freeing
+          // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+          for( int j = 0; j < p_num_be_lanes; j++ ) begin
+            if( is_free[j] & ( commit_seq_num[j] == i ) )
+              seq_num_list[i] <= FREE;
+          end
+
+          // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+          // Squashing - free all inst seq nums younger than ctrl_flow inst's
+          // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+          // verilator lint_off UNSIGNED
+          // verilator lint_off CMPCONST
+          if( ctrl_flow.redirect_val & ((ctrl_flow.seq_num < i[p_seq_num_bits-1:0]) ^
+                           (ctrl_flow.seq_num < oldest_seq_num)      ^
+                           (i[p_seq_num_bits-1:0] < oldest_seq_num)) )
+          // verilator lint_on UNSIGNED
+          // verilator lint_on CMPCONST
+            // The corresponding instruction is ctrl_flowed
+            seq_num_list[i] <= FREE;
+        end
+      end
+    end
+  endgenerate
+
+  // With (p_seq_num_bits+1)-bit pointers, entries_allocated is simply the difference
+  logic [p_seq_num_bits:0] entries_allocated;
+  assign entries_allocated = curr_head_ptr - curr_tail_ptr;
+
+  //----------------------------------------------------------------------
+  // Allocation
+  //----------------------------------------------------------------------
+
+  // Track how many entries we need to allocate in this cycle
+  logic [p_num_fe_lanes_bits:0] alloc_try_cntr;
+
+  // Count how many lanes are requesting allocation (separate block to break
+  // combinational loop with can_alloc)
+  always_comb begin
+    alloc_try_cntr = '0;
+    for( int j = 0; j < p_num_fe_lanes; j++ ) begin
+      if( alloc_try[j] )
+        alloc_try_cntr = alloc_try_cntr + 1;
+    end
+  end
+
+  // Check that alloc_rdy_cntr consecutive entries from head are free.
+  // During a ctrl_flow, entries younger than ctrl_flow.seq_num are being freed
+  // this cycle (registered), so bypass the check — those entries are
+  // guaranteed to become free at the next posedge.
+  logic                      alloc_entries_free;
+  logic [p_seq_num_bits-1:0] alloc_check_idx;
+
+  logic [p_num_fe_lanes_bits:0] alloc_check_cntr;
+
+  always_comb begin
+    alloc_entries_free = 1'b1;
+    alloc_check_idx    = curr_head_ptr[p_seq_num_bits-1:0];
+    alloc_check_cntr   = '0;
+    if( !(ctrl_flow.redirect_val) ) begin
+      for( int k = 0; k < p_num_fe_lanes; k++ ) begin
+        if( alloc_check_cntr < alloc_try_cntr && seq_num_list[alloc_check_idx] != FREE )
+          alloc_entries_free = 1'b0;
+        alloc_check_idx  = alloc_check_idx  + 1'b1;
+        alloc_check_cntr = alloc_check_cntr + 1'b1;
+      end
+    end
+  end
+
+  // Can only allocate if there's enough space for all entries we need to
+  // allocate and all those entries are free.
+  // During a ctrl_flow, use the effective head (ctrl_flow.seq_num + 1) instead
+  // of the stale curr_head_ptr so entries_allocated reflects the post-
+  // ctrl_flow state.
+  // Compute the correct (p_seq_num_bits+1)-bit head pointer after a ctrl_flow.
+  // ctrl_flow.seq_num is only p_seq_num_bits wide, so we must reconstruct the
+  // wrap-around MSB from the current head pointer to keep entries_allocated
+  // correct.
+  logic [p_seq_num_bits:0] ctrl_flow_head_ptr;
+  always_comb begin
+    ctrl_flow_head_ptr[p_seq_num_bits-1:0] = p_seq_num_bits'(ctrl_flow.seq_num + 1);
+    // If the new position is ahead of the current head position (in the lower
+    // bits), the ctrl_flow rolled back across the wrap boundary, so decrement
+    // the wrap bit.
+    if( p_seq_num_bits'(ctrl_flow.seq_num + 1) > curr_head_ptr[p_seq_num_bits-1:0] )
+      ctrl_flow_head_ptr[p_seq_num_bits] = curr_head_ptr[p_seq_num_bits] - 1'b1;
+    else
+      ctrl_flow_head_ptr[p_seq_num_bits] = curr_head_ptr[p_seq_num_bits];
+  end
+
+  logic can_alloc;
+  logic [p_seq_num_bits:0] space_needed;
+  logic [p_seq_num_bits:0] space_available;
+  logic [p_seq_num_bits:0] eff_entries_allocated;
+
+  always_comb begin
+    if( ctrl_flow.redirect_val )
+      eff_entries_allocated = ctrl_flow_head_ptr - curr_tail_ptr;
+    else
+      eff_entries_allocated = entries_allocated;
+
+    space_needed    = eff_entries_allocated + (p_seq_num_bits+1)'(alloc_try_cntr);
+    space_available = p_num_entries;
+    can_alloc       = (space_needed <= space_available) & alloc_entries_free;
+  end
+
+  // Allocate consecutive sequence numbers starting from head pointer for each
+  // trying lane
+  logic [p_num_fe_lanes_bits:0] alloc_lane_cntr;
+  always_comb begin
+    alloc_lane_cntr = '0;
+    for( int j = 0; j < p_num_fe_lanes; j++ ) begin: ALLOC_SEQ_NUM_ASSIGN
+      alloc_seq_num[j] = '0;
+      if( alloc_try[j] ) begin
+        alloc_seq_num[j] = ( ctrl_flow.redirect_val ) ? ctrl_flow.seq_num + p_seq_num_bits'(1 + alloc_lane_cntr)
+                                          : p_seq_num_bits'(curr_head_ptr[p_seq_num_bits-1:0] + alloc_lane_cntr);
+        alloc_lane_cntr = alloc_lane_cntr + 1;
+      end
+
+      // Ready for this lane if we can allocate and this lane is trying
+      alloc_rdy[j] = can_alloc & alloc_try[j];
+    end
+  end
+
+  // Count validated allocations for head pointer advancement
+  logic [p_num_fe_lanes_bits:0] alloc_val_cntr;
+  always_comb begin
+    alloc_val_cntr = '0;
+    for( int j = 0; j < p_num_fe_lanes; j++ ) begin
+      if( alloc_val[j] )
+        alloc_val_cntr = alloc_val_cntr + 1;
+    end
+  end
+
+  logic [p_seq_num_bits:0] curr_head_ptr_next;
+
+  always_ff @( posedge clk ) begin
+    if( rst ) begin
+      curr_head_ptr <= '0;
+    end else begin
+      curr_head_ptr <= curr_head_ptr_next;
+    end
+  end
+
+  always_comb begin
+    curr_head_ptr_next = curr_head_ptr;
+
+    // On a ctrl_flow, head pointer goes to inst after ctrl_flowed inst
+    // Use ctrl_flow_head_ptr which preserves the wrap-around MSB
+    if( ctrl_flow.redirect_val ) curr_head_ptr_next = ctrl_flow_head_ptr;
+
+    // If allocating (possibly also during a ctrl_flow), head pointer moves forward
+    // by number of validated allocations (starting from new ctrl_flow head pointer
+    // if ctrl_flow happens)
+    if( |alloc_val_cntr ) curr_head_ptr_next = curr_head_ptr_next + (p_seq_num_bits+1)'(alloc_val_cntr);
+  end
+
+  //----------------------------------------------------------------------
+  // Freeing
+  //----------------------------------------------------------------------
+
+  generate
+    for( i = 0; i < p_num_be_lanes; i++ ) begin: FREE_LOGIC
+      assign is_free[i] = commit[i].val;
+    end
+  endgenerate
+
+  logic [31:0] unused_commit_pc    [p_num_be_lanes];
+  logic  [4:0] unused_commit_waddr [p_num_be_lanes];
+  logic [31:0] unused_commit_wdata [p_num_be_lanes];
+  logic        unused_commit_wen   [p_num_be_lanes];
+
+  generate
+    for( i = 0; i < p_num_be_lanes; i++ ) begin: UNUSED_COMMIT_SIGNALS
+      assign unused_commit_pc[i]    = commit[i].pc;
+      assign unused_commit_waddr[i] = commit[i].waddr;
+      assign unused_commit_wdata[i] = commit[i].wdata;
+      assign unused_commit_wen[i]   = commit[i].wen;
+    end
+  endgenerate
+
+  //----------------------------------------------------------------------
+  // Reclaiming
+  //----------------------------------------------------------------------
+
+  // verilator lint_off SPLITVAR
+  logic [p_reclaim_width-1:0] reclaim_valid /* verilator split_var */;
+  // verilator lint_on SPLITVAR
+  logic [p_reclaim_width-1:0] reclaim_select;
+
+  generate
+    for( i = 0; i < p_reclaim_width; i++ ) begin: RECLAIM_VAL
+      if( i == 0 )
+        assign reclaim_valid[i] = ( seq_num_list[p_seq_num_bits'(curr_tail_ptr[p_seq_num_bits-1:0] + i)] == FREE ) &
+                                  ((p_seq_num_bits+1)'(i) < entries_allocated                              );
+      else
+        assign reclaim_valid[i] = ( seq_num_list[p_seq_num_bits'(curr_tail_ptr[p_seq_num_bits-1:0] + i)] == FREE ) &
+                                  ((p_seq_num_bits+1)'(i) < entries_allocated                              ) &
+                                  reclaim_valid[i - 1];
+    end
+  endgenerate
+
+  // Identify the maximum amount to reclaim
+  generate
+    if (p_reclaim_width > 1) begin
+      assign reclaim_select = reclaim_valid & (
+        ((~reclaim_valid) >> 1) | 
+        {1'b1, (p_reclaim_width-1)'(1'b0)}
+      );
+    end else begin
+      assign reclaim_select = reclaim_valid & (
+        ((~reclaim_valid) >> 1) | 
+        {1'b1}
+      );
+    end
+  endgenerate
+
+  // Find the maximum amount to reclaim
+  logic [p_seq_num_bits:0] curr_tail_incr;
+  logic [p_seq_num_bits:0] curr_tail_incr_cntr;
+
+  always_comb begin
+    curr_tail_incr      = '0;
+    curr_tail_incr_cntr = '0;
+    for (int j = 0; j < p_reclaim_width; j++) begin
+      curr_tail_incr_cntr = curr_tail_incr_cntr + 1'b1;
+      if( reclaim_select[j] )
+        curr_tail_incr = curr_tail_incr_cntr;
+    end
+  end
+
+  always_ff @( posedge clk ) begin
+    if( rst ) begin
+      curr_tail_ptr <= '0;
+    end else begin
+      curr_tail_ptr <= curr_tail_ptr + curr_tail_incr;
+    end
+  end
+
+  logic [31:0] unused_ctrl_flow_target;
+  assign unused_ctrl_flow_target = ctrl_flow.target;
+
+  //----------------------------------------------------------------------
+  // Linetracing
+  //----------------------------------------------------------------------
+
+`ifndef SYNTHESIS
+  function int ceil_div_4( int val );
+    return (val / 4) + ((val % 4) > 0 ? 1 : 0);
+  endfunction
+
+  function automatic string trace( int trace_level );
+    string alloc_trace, free_trace;
+
+    alloc_trace = "";
+    for( int j = 0; j < p_num_fe_lanes; j = j + 1 ) begin
+      if( j != 0 )
+        alloc_trace = {alloc_trace, ","};
+      if( alloc_val[j] )
+        alloc_trace = {alloc_trace, $sformatf("%h", alloc_seq_num[j])};
+      else
+        alloc_trace = {alloc_trace, {(ceil_div_4(p_seq_num_bits)){" "}}};
+    end
+
+    free_trace = "";
+    for( int j = 0; j < p_num_be_lanes; j = j + 1 ) begin
+      if( j != 0 )
+        free_trace = {free_trace, ","};
+      if( is_free[j] )
+        free_trace = {free_trace, $sformatf("%h", commit_seq_num[j])};
+      else
+        free_trace = {free_trace, {(ceil_div_4(p_seq_num_bits)){" "}}};
+    end
+
+    if( trace_level > 0 )
+      trace = $sformatf("%h::%h (%s) (%s)",
+        curr_head_ptr,
+        curr_tail_ptr,
+        alloc_trace,
+        free_trace
+      );
+    else
+      trace = $sformatf("%s - %s", alloc_trace, free_trace);
+  endfunction
+`endif
+
+endmodule
+
+`endif // HW_FETCH_SEQNUMGEN_V

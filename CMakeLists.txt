@@ -1,0 +1,509 @@
+# ========================================================================
+# CMakeLists.txt
+# ========================================================================
+# A build system for Zeppelin
+
+SET(CMAKE_CXX_STANDARD_LIBRARIES "")
+
+#-------------------------------------------------------------------------
+# Get all of the source files
+#-------------------------------------------------------------------------
+
+set(V_TEST_FILES
+  hw/common/test/Fifo_test.v
+  hw/common/test/PriorityEncoder_test.v
+  hw/decode_issue/test/DecodeIssueUnit_test.v
+  hw/decode_issue/test/ImmGen_test.v
+  hw/decode_issue/test/IssueQueueInOrder_test.v
+  hw/decode_issue/test/SSInstRouter_test.v
+  hw/decode_issue/test/SSRenameTable_test.v
+  hw/execute/test/ALU_test.v
+  hw/execute/test/ControlFlowUnit_test.v
+  hw/execute/test/IterativeMulDivRem_test.v
+  hw/execute/test/LoadStoreUnit_test.v
+  hw/fetch/test/FetchUnit_test.v
+  hw/fetch/test/SeqNumGen_test.v
+  hw/util/test/SSSeqAge_test.v
+  hw/writeback_commit/test/WritebackCommitUnit_test.v
+  hw/writeback_commit/test/SSROB_test.v
+  test/fl/test/MSourceSink_test.v
+)
+
+set(ASM_FILES
+  asm/assemble.cpp
+  asm/disassemble.cpp
+  asm/inst.cpp
+  asm/fields.cpp
+)
+
+set(FL_PROC_FILES
+  fl/FLInst.cpp
+  fl/FLMem.cpp
+  fl/FLPeripheral.cpp
+  fl/FLProc.cpp
+  fl/FLRegfile.cpp
+  fl/FLTrace.cpp
+  fl/fl_vtrace.cpp
+  fl/fl_peripherals.cpp
+  fl/parse_elf.cpp
+
+  fl/peripherals/FLExit.cpp
+  fl/peripherals/FLTerminal.cpp
+)
+
+set(APP_SUBDIRS
+  app
+)
+
+#-------------------------------------------------------------------------
+# Set the compiler
+#-------------------------------------------------------------------------
+
+set(CMAKE_C_COMPILER gcc)
+set(CMAKE_CXX_COMPILER g++)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED True)
+
+#-------------------------------------------------------------------------
+# Boilerplate
+#-------------------------------------------------------------------------
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+cmake_minimum_required(VERSION 3.10)
+project(
+  ZEPPELIN 
+  VERSION 1.0
+  DESCRIPTION "ZEPPELIN: BRG's Luculently-Interfaced Modular Processor"
+  LANGUAGES Verilog C CXX ASM
+)
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vdeps.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vlint.cmake)
+
+enable_testing()
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+
+if(CMAKE_Verilog_COMPILER_ID STREQUAL "Verilator")
+  add_compile_definitions("ZEPPELIN_VERILATOR")
+elseif(CMAKE_Verilog_COMPILER_ID STREQUAL "VCS")
+  add_compile_definitions("ZEPPELIN_VCS")
+elseif(CMAKE_Verilog_COMPILER_ID STREQUAL "Iverilog")
+  message(WARNING
+    "Zeppelin uses many SystemVerilog features that Iverilog doesn't support\n"
+    "Results may vary"
+  )
+endif()
+
+#-------------------------------------------------------------------------
+# Tracing
+#-------------------------------------------------------------------------
+# Disable by default for speed
+
+if(NOT DEFINED TRACE)
+set(TRACE 0)
+endif()
+
+#-------------------------------------------------------------------------
+# VCD Dumping
+#-------------------------------------------------------------------------
+# Pass -DDUMP_VCD=1 to enable VCS VCD waveform dumping for ASIC targets.
+
+if(NOT DEFINED DUMP_VCD)
+set(DUMP_VCD 0)
+endif()
+
+#-------------------------------------------------------------------------
+# Coverage Reporting
+#-------------------------------------------------------------------------
+# Pass -DCOVERAGE=1 to enable simulator coverage metrics collection
+
+if(NOT DEFINED COVERAGE)
+set(COVERAGE 0)
+endif()
+
+#-------------------------------------------------------------------------
+# get_leaf
+#-------------------------------------------------------------------------
+# Gets the leaf file of a path.
+
+function(get_leaf VARNAME FILE_NAME)
+  string(REGEX REPLACE "[^/]*/" "" NAME_WITHOUT_EXT ${FILE_NAME})
+  set(${VARNAME} "${NAME_WITHOUT_EXT}" PARENT_SCOPE)
+endfunction()
+
+#------------------------------------------------------------------------
+# remove_extension
+#------------------------------------------------------------------------
+# A function to remove a file's extension
+
+function(remove_extension VARNAME FILE_NAME)
+  string(REGEX REPLACE "\\.[^.]*$" "" NAME_WITHOUT_EXT ${FILE_NAME})
+  set(${VARNAME} "${NAME_WITHOUT_EXT}" PARENT_SCOPE)
+endfunction()
+
+#------------------------------------------------------------------------
+# version_name
+#------------------------------------------------------------------------
+# A function to get the version indicator from a Zeppelin version
+
+function(version_name VNAME ZEPPELIN_VERSION)
+  if(ZEPPELIN_VERSION STREQUAL "FLProc")
+    set(${VNAME} "fl" PARENT_SCOPE)
+  elseif(ZEPPELIN_VERSION STREQUAL "Zeppelin")
+    set(${VNAME} "zeppelin" PARENT_SCOPE)
+  else()
+    set(${VNAME} ${ZEPPELIN_VERSION} PARENT_SCOPE)
+  endif()
+endfunction()
+
+#------------------------------------------------------------------------
+# sim_name
+#------------------------------------------------------------------------
+# A function to convert a simulation Verilog file name to an executable
+# name
+
+function(sim_name SIMNAME FILE_NAME)
+  if(FILE_NAME STREQUAL "Zeppelin_sim.v")
+    set(${SIMNAME} "zeppelin-sim" PARENT_SCOPE)
+  else()
+    string(REGEX REPLACE "_sim\\.v$" "-sim" SIM_NAME ${FILE_NAME})
+    string(TOLOWER ${SIM_NAME} SIM_NAME)
+    set(${SIMNAME} ${SIM_NAME} PARENT_SCOPE)
+  endif()
+endfunction()
+
+#------------------------------------------------------------------------
+# add_prefix
+#------------------------------------------------------------------------
+# A function to add a prefix to all elements of a list
+
+function(add_prefix LIST_VAR PREFIX)
+  set(NEW_LIST_VAR "")
+  foreach(ITEM ${${LIST_VAR}})
+    list(APPEND NEW_LIST_VAR "${PREFIX}${ITEM}")
+  endforeach(ITEM)
+  set(${LIST_VAR} ${NEW_LIST_VAR} PARENT_SCOPE)
+endfunction()
+
+#------------------------------------------------------------------------
+# ASM Library
+#------------------------------------------------------------------------
+
+add_library(ASM STATIC ${ASM_FILES})
+target_compile_options(ASM PRIVATE -O3 -Wall -Wextra -Wpedantic -Werror)
+
+#------------------------------------------------------------------------
+# FL_PROC Library
+#------------------------------------------------------------------------
+
+add_library(FL_PROC STATIC ${FL_PROC_FILES})
+target_link_libraries(FL_PROC PRIVATE ASM)
+target_compile_options(FL_PROC PRIVATE -O3 -Wall -Wextra -Wpedantic -Werror)
+
+#------------------------------------------------------------------------
+# Add Zeppelin's tests
+#------------------------------------------------------------------------
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/hw/top/test/tests.cmake)
+
+foreach(ZEPPELIN_VERSION ${PROCS})
+  add_prefix(${ZEPPELIN_VERSION}_TESTS "hw/top/test/")
+  set(V_TEST_FILES
+    ${V_TEST_FILES}
+    ${${ZEPPELIN_VERSION}_TESTS}
+  )
+endforeach()
+
+# Only the Zeppelin harness exports init_dut_mem via DPI-C, so only those
+# tests (and ELF suite tests) can link against load_elf_test.cpp.
+set(ELF_V_TEST_FILES ${Zeppelin_TESTS})
+
+set(ELF_SUITES_CMAKE
+  "${CMAKE_CURRENT_SOURCE_DIR}/hw/top/test/riscv_dv_asm/elf_suites/riscv_dv_elf_suites.cmake")
+if(EXISTS "${ELF_SUITES_CMAKE}")
+  include("${ELF_SUITES_CMAKE}")
+  list(APPEND V_TEST_FILES ${ELF_SUITE_FILES})
+  list(APPEND ELF_V_TEST_FILES ${ELF_SUITE_FILES})
+endif()
+
+#------------------------------------------------------------------------
+# Add our SystemVerilog tests
+#------------------------------------------------------------------------
+
+add_custom_target(check COMMAND "ctest")
+foreach(ZEPPELIN_VERSION ${PROCS})
+  version_name(ZEPPELIN_VERSION_SHORT ${ZEPPELIN_VERSION})
+  add_custom_target(check-${ZEPPELIN_VERSION_SHORT} COMMAND "ctest" "-L" "${ZEPPELIN_VERSION}")
+endforeach()
+
+foreach(V_TEST_FILE_REL_PATH ${V_TEST_FILES})
+  set(V_TEST_FILE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/${V_TEST_FILE_REL_PATH}")
+  get_leaf(V_TEST_FILE ${V_TEST_FILE_PATH})
+  remove_extension(V_TEST_BIN ${V_TEST_FILE})
+
+  if(${V_TEST_FILE_REL_PATH} IN_LIST ELF_V_TEST_FILES)
+    add_executable(${V_TEST_BIN} ${V_TEST_FILE_PATH} "hw/top/test/utils/load_elf_test.cpp")
+  else()
+    add_executable(${V_TEST_BIN} ${V_TEST_FILE_PATH})
+  endif()
+  target_include_directories(${V_TEST_BIN} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_Verilog_DPI_INCLUDES})
+
+  if(CMAKE_Verilog_COMPILER_ID STREQUAL "Verilator")
+    set(V_COMPILE_FLAGS "--timing --quiet-stats ${CMAKE_CURRENT_SOURCE_DIR}/verilator_waivers.vlt")
+    if(TRACE)
+      set(V_COMPILE_FLAGS "${V_COMPILE_FLAGS} --trace --trace-structs")
+    endif()
+    if(COVERAGE)
+      set(V_COMPILE_FLAGS "${V_COMPILE_FLAGS} --coverage --assert")
+    endif()
+    set_source_files_properties(
+      ${V_TEST_FILE_PATH}
+      PROPERTIES
+      COMPILE_FLAGS "${V_COMPILE_FLAGS}"
+    )
+  endif()
+
+  if(CMAKE_Verilog_COMPILER_ID STREQUAL "VCS")
+    target_link_options(${V_TEST_BIN} PRIVATE -full64 -xprop=tmerge)
+    if(TRACE)
+      target_link_options(${V_TEST_BIN} PRIVATE +vcs+dumpvars+${V_TEST_BIN}.vcd +vcs+vcdpluson +vcs+vcdplusmemon)
+    endif()
+    if(COVERAGE)
+      target_link_options(${V_TEST_BIN} PRIVATE +cover=all -cm line+cond+tgl+fsm+branch -cm_dir ${V_TEST_BIN}.vdb)
+    endif()
+  endif()
+
+  # Add our main simulation loop and libraries
+  target_link_libraries(${V_TEST_BIN} PRIVATE FL_PROC)
+
+  # Track dependencies
+  vdeps(TEST_DEPS
+    SOURCE ${V_TEST_FILE_REL_PATH}
+    INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  add_prefix(TEST_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/")
+  set_property(SOURCE ${V_TEST_FILE_PATH} APPEND PROPERTY OBJECT_DEPENDS ${TEST_DEPS})
+
+  # Add linting
+  vlint(${V_TEST_BIN}-lint
+    TARGET_NAME ${V_TEST_BIN}
+    SOURCES ${V_TEST_FILE_REL_PATH}
+    INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
+    DEPENDS ${TEST_DEPS}
+  )
+  add_dependencies(${V_TEST_BIN} ${V_TEST_BIN}-lint)
+
+  add_dependencies(check ${V_TEST_BIN})
+  file(RELATIVE_PATH TEST_PATH ${CMAKE_CURRENT_SOURCE_DIR} ${V_TEST_FILE_PATH})
+  remove_extension(TEST_NAME ${TEST_PATH})
+  add_test(NAME ${TEST_NAME} COMMAND ${V_TEST_BIN})
+
+  set(CMAKE_VTESTS ${CMAKE_VTESTS} ${V_TEST_BIN})
+  set_tests_properties(
+    ${TEST_NAME} PROPERTIES 
+    FAIL_REGULAR_EXPRESSION "timeout!|One or more tests failed"
+    TIMEOUT 1200
+  )
+
+  # Include check commands for each version
+  foreach(ZEPPELIN_VERSION ${PROCS})
+    if(${V_TEST_FILE_REL_PATH} IN_LIST ${ZEPPELIN_VERSION}_TESTS)
+      version_name(ZEPPELIN_VERSION_SHORT ${ZEPPELIN_VERSION})
+      add_dependencies(check-${ZEPPELIN_VERSION_SHORT} ${V_TEST_BIN})
+      set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${ZEPPELIN_VERSION}")
+    endif()
+  endforeach(ZEPPELIN_VERSION)
+endforeach(V_TEST_FILE_REL_PATH)
+
+#------------------------------------------------------------------------
+# riscv-dv-elf-tests meta-target
+#------------------------------------------------------------------------
+# Depends on every generated ELF suite binary so that
+# `make -j<N> riscv-dv-elf-tests` builds them all with proper dependency
+# coordination.  ELF_SUITE_FILES is empty when the cmake manifest has not
+# been generated yet, in which case the target is a no-op.
+
+add_custom_target(riscv-dv-elf-tests)
+foreach(ELF_SUITE_FILE_REL ${ELF_SUITE_FILES})
+  get_filename_component(ELF_SUITE_BIN ${ELF_SUITE_FILE_REL} NAME_WE)
+  add_dependencies(riscv-dv-elf-tests ${ELF_SUITE_BIN})
+endforeach()
+
+#------------------------------------------------------------------------
+# List tests
+#------------------------------------------------------------------------
+
+set(KNOWN_TESTS_TEXT "Available test targets:")
+set(LIST_COMMANDS COMMAND ${CMAKE_COMMAND} -E echo "Available test targets:")
+foreach(VTEST ${CMAKE_VTESTS})
+  set(LIST_COMMANDS ${LIST_COMMANDS} COMMAND ${CMAKE_COMMAND} -E echo " - ${VTEST}")
+endforeach(VTEST)
+
+add_custom_target(
+  list
+  ${LIST_COMMANDS}
+  COMMENT ${KNOWN_TEST_TEXT}
+)
+
+#------------------------------------------------------------------------
+# Include RISCV programs
+#------------------------------------------------------------------------
+
+foreach(APP_SUBDIR ${APP_SUBDIRS})
+  set(PROGS "")
+  add_subdirectory(${APP_SUBDIR})
+  add_prefix(SRC_FILES ${CMAKE_CURRENT_SOURCE_DIR}/${APP_SUBDIR}/)
+  add_prefix(APP_FILES ${CMAKE_CURRENT_SOURCE_DIR}/${APP_SUBDIR}/)
+
+  # Include native builds for all apps
+  foreach(PROG ${PROGS})
+    set(SRC_FILES ${${APP_SUBDIR}-${PROG}-files})
+    add_prefix(SRC_FILES ${CMAKE_CURRENT_SOURCE_DIR}/${APP_SUBDIR}/)
+    add_executable(${APP_SUBDIR}-${PROG}-native ${SRC_FILES})
+    target_compile_options(${APP_SUBDIR}-${PROG}-native PRIVATE -O3 -Wall -Wextra -Wpedantic -Werror)
+    target_include_directories(${APP_SUBDIR}-${PROG}-native PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/${APP_SUBDIR})
+    set_target_properties(${APP_SUBDIR}-${PROG}-native PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/${APP_SUBDIR}"
+      OUTPUT_NAME ${PROG}-native
+    )
+  endforeach(PROG)
+endforeach(APP_SUBDIR)
+
+#-------------------------------------------------------------------------
+# Include Test RISCV programs
+#-------------------------------------------------------------------------
+
+add_subdirectory(hw/top/test/riscv_dv_asm)
+
+#-------------------------------------------------------------------------
+# Include FL simulator
+#-------------------------------------------------------------------------
+
+add_executable(fl-sim fl/fl_sim.cpp)
+target_compile_options(fl-sim PRIVATE -Wall -Wextra -Wpedantic -Werror)
+target_link_libraries(fl-sim PRIVATE FL_PROC)
+
+#------------------------------------------------------------------------
+# Add our SystemVerilog simulators
+#------------------------------------------------------------------------
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/hw/top/sim/sims.cmake)
+add_prefix(ZEPPELIN_SIMS "hw/top/sim/")
+
+foreach(V_SIM_FILE_REL_PATH ${ZEPPELIN_SIMS})
+  set(V_SIM_FILE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/${V_SIM_FILE_REL_PATH}")
+  get_leaf(V_SIM_FILE ${V_SIM_FILE_PATH})
+  sim_name(V_SIM_BIN ${V_SIM_FILE})
+
+  add_executable(${V_SIM_BIN} ${V_SIM_FILE_PATH} "hw/top/sim/utils/load_elf.cpp")
+  target_include_directories(${V_SIM_BIN} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_Verilog_DPI_INCLUDES})
+
+  if(CMAKE_Verilog_COMPILER_ID STREQUAL "Verilator")
+    set(V_COMPILE_FLAGS "--timing --quiet-stats ${CMAKE_CURRENT_SOURCE_DIR}/verilator_waivers.vlt")
+    if(TRACE)
+      set(V_COMPILE_FLAGS "${V_COMPILE_FLAGS} --trace --trace-structs")
+    endif()
+    set_source_files_properties(
+      ${V_SIM_FILE_PATH}
+      PROPERTIES
+      COMPILE_FLAGS "${V_COMPILE_FLAGS}"
+    )
+  endif()
+  
+  # Add our main simulation loop and libraries
+  target_link_libraries(${V_SIM_BIN} PRIVATE FL_PROC)
+
+  # Track dependencies
+  vdeps(SIM_DEPS
+    SOURCE ${V_SIM_FILE_REL_PATH}
+    INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
+  )
+  add_prefix(SIM_DEPS "${CMAKE_CURRENT_SOURCE_DIR}/")
+  set_property(SOURCE ${V_SIM_FILE_PATH} APPEND PROPERTY OBJECT_DEPENDS ${SIM_DEPS})
+
+  # Add linting
+  vlint(${V_SIM_BIN}-lint
+    TARGET_NAME ${V_SIM_BIN}
+    SOURCES ${V_SIM_FILE_REL_PATH}
+    INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
+    DEPENDS ${SIM_DEPS}
+  )
+  add_dependencies(${V_SIM_BIN} ${V_SIM_BIN}-lint)
+endforeach(V_SIM_FILE_REL_PATH)
+
+#------------------------------------------------------------------------
+# Add our CLI tools
+#------------------------------------------------------------------------
+
+add_subdirectory(tools)
+
+foreach(TOOL_FILE_REL_PATH ${TOOL_FILES})
+  set(TOOL_FILE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/tools/${TOOL_FILE_REL_PATH}")
+  get_leaf(TOOL_FILE ${TOOL_FILE_PATH})
+  remove_extension(TOOL_BIN ${TOOL_FILE})
+
+  add_executable(${TOOL_BIN} ${TOOL_FILE_PATH})
+  target_compile_options(${TOOL_BIN} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  target_link_libraries(${TOOL_BIN} PRIVATE FL_PROC)
+endforeach(TOOL_FILE_REL_PATH)
+
+#------------------------------------------------------------------------
+# VCS dependency target
+#------------------------------------------------------------------------
+# Builds only the C++ libraries (FL_PROC, ASM) needed for running VCS
+# in the ASIC flow
+
+add_custom_target(vcs-deps DEPENDS FL_PROC ASM)
+
+#------------------------------------------------------------------------
+# Coverage target
+#------------------------------------------------------------------------
+# Splits coverage.dat into per-type (functional, line, toggle, branch) 
+# coverage .dat files and annotates each with verilator_coverage.
+#
+# The split logic is inlined below as a CMake script written into the build 
+# directory at configure time.
+
+file(WRITE ${CMAKE_BINARY_DIR}/split_verilator_coverage.cmake [=[
+  set(HEADER "# SystemC::Coverage-3\n")
+  set(LINE_DAT       "${HEADER}")
+  set(TOGGLE_DAT     "${HEADER}")
+  set(BRANCH_DAT     "${HEADER}")
+  set(FUNCTIONAL_DAT "${HEADER}")
+  file(READ "${BINARY_DIR}/coverage.dat" COVERAGE_DATA)
+  string(REPLACE "\n" ";" COVERAGE_LINES "${COVERAGE_DATA}")
+  foreach(LINE IN LISTS COVERAGE_LINES)
+    if(LINE MATCHES "v_line")
+      string(APPEND LINE_DAT       "${LINE}\n")
+    elseif(LINE MATCHES "v_toggle")
+      string(APPEND TOGGLE_DAT     "${LINE}\n")
+    elseif(LINE MATCHES "v_branch")
+      string(APPEND BRANCH_DAT     "${LINE}\n")
+    elseif(LINE MATCHES "v_user")
+      string(APPEND FUNCTIONAL_DAT "${LINE}\n")
+    endif()
+  endforeach()
+  file(WRITE "${BINARY_DIR}/line.dat"       "${LINE_DAT}")
+  file(WRITE "${BINARY_DIR}/toggle.dat"     "${TOGGLE_DAT}")
+  file(WRITE "${BINARY_DIR}/branch.dat"     "${BRANCH_DAT}")
+  file(WRITE "${BINARY_DIR}/functional.dat" "${FUNCTIONAL_DAT}")
+]=])
+
+add_custom_target(coverage
+  COMMAND ${CMAKE_COMMAND} -E make_directory coverage
+  COMMAND ${CMAKE_COMMAND} -DBINARY_DIR=${CMAKE_BINARY_DIR} -P ${CMAKE_BINARY_DIR}/split_verilator_coverage.cmake
+  COMMAND verilator_coverage --annotate coverage/total              coverage.dat   --annotate-min 1
+  COMMAND verilator_coverage --annotate coverage/total_details      coverage.dat   --annotate-min 1 --annotate-points
+  COMMAND verilator_coverage --annotate coverage/line               line.dat       --annotate-min 1
+  COMMAND verilator_coverage --annotate coverage/line_details       line.dat       --annotate-min 1 --annotate-points
+  COMMAND verilator_coverage --annotate coverage/toggle             toggle.dat     --annotate-min 1
+  COMMAND verilator_coverage --annotate coverage/toggle_details     toggle.dat     --annotate-min 1 --annotate-points
+  COMMAND verilator_coverage --annotate coverage/branch             branch.dat     --annotate-min 1
+  COMMAND verilator_coverage --annotate coverage/branch_details     branch.dat     --annotate-min 1 --annotate-points
+  COMMAND verilator_coverage --annotate coverage/functional         functional.dat --annotate-min 1
+  COMMAND verilator_coverage --annotate coverage/functional_details functional.dat --annotate-min 1 --annotate-points
+  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+  COMMENT "Splitting and annotating Verilator coverage data"
+)

@@ -1,0 +1,364 @@
+//========================================================================
+// TestUtils.v
+//========================================================================
+// Testing utilities, to be used in testbenches
+// Adapted from ECE2300, Cornell University
+
+`ifndef TEST_TEST_UTILS_V
+`define TEST_TEST_UTILS_V
+
+//------------------------------------------------------------------------
+// Colors
+//------------------------------------------------------------------------
+
+`define RED    "\033[31m"
+`define YELLOW "\033[33m"
+`define GREEN  "\033[32m"
+`define BLUE   "\033[34m"
+`define PURPLE "\033[35m"
+`define RESET  "\033[0m"
+
+//------------------------------------------------------------------------
+// Cycle Time
+//------------------------------------------------------------------------
+
+`ifndef CYCLE_TIME
+  `define CYCLE_TIME 10
+`endif
+
+//------------------------------------------------------------------------
+// TestEnv
+//------------------------------------------------------------------------
+
+package TestEnv;
+
+  //----------------------------------------------------------------------
+  // TestStatus
+  //----------------------------------------------------------------------
+  // A class to statically track the number of failed tests, acting as a
+  // way to hold a global variable of failed tests
+
+  class TestStatus;
+    static int num_failed = 0;
+  
+    static task test_fail();
+      num_failed += 1;
+    endtask
+  endclass
+
+  //----------------------------------------------------------------------
+  // get_test_suite
+  //----------------------------------------------------------------------
+
+  function int get_test_suite();
+    if ( !$value$plusargs( "test-suite=%d", get_test_suite ) )
+      get_test_suite = 0;
+  endfunction
+
+  //----------------------------------------------------------------------
+  // test_bench_begin
+  //----------------------------------------------------------------------
+  // We start with a #1 delay so that all tasks will essentially start at
+  // #1 after the rising edge of the clock.
+  // test_bench_begin
+
+  task test_bench_begin( string filename );
+    $write("\nRunning %s", filename);
+    if ( $value$plusargs( "dump-vcd=%s", filename ) ) begin
+      $dumpfile(filename);
+      $dumpvars();
+    end
+    #1;
+  endtask
+
+  //----------------------------------------------------------------------
+  // test_bench_end
+  //----------------------------------------------------------------------
+
+  task test_bench_end();
+    $write("\n\n");
+    if( TestStatus::num_failed > 0 ) begin
+      $fatal("One or more tests failed");
+    end else begin
+      $finish(0);
+    end
+  endtask
+endpackage
+
+
+//========================================================================
+// TestUtils
+//========================================================================
+
+module TestUtils
+(
+  output logic clk,
+  output logic rst
+);
+
+  // ---------------------------------------------------------------------
+  // Clocking
+  // ---------------------------------------------------------------------
+  
+  // verilator lint_off BLKSEQ
+  initial clk = 1'b1;
+  always #(`CYCLE_TIME/2) clk = ~clk;
+  // verilator lint_on BLKSEQ
+
+  // ---------------------------------------------------------------------
+  // Error Count
+  // ---------------------------------------------------------------------
+
+  // verilator lint_off UNUSEDSIGNAL
+  logic failed = 0;
+  //verilator lint_on UNUSEDSIGNAL
+
+  // ---------------------------------------------------------------------
+  // Filtering Utilities
+  // ---------------------------------------------------------------------
+
+  // verilator lint_off UNUSEDSIGNAL
+  string select;
+  logic select_active;
+  logic verbose;
+  int trace_level;
+  string trace_header;
+  // verilator lint_on UNUSEDSIGNAL
+
+  initial begin
+    select_active = 1'b0;
+    if ( $value$plusargs( "select=%s", select ) )
+      select_active = 1'b1;
+    else if ( $value$plusargs( "s=%s", select ) )
+      select_active = 1'b1;
+  end
+
+  initial begin
+    if ( $test$plusargs ("verbose") || $test$plusargs ("v") )
+      verbose = 1'b1;
+    else
+      verbose = 1'b0;
+
+    if ( !$value$plusargs( "trace-level=%d", trace_level ) )
+      trace_level = 0;
+  end
+
+  function logic contains( input string test_name );
+    // Check that the test name contains the filter
+    int test_name_len;
+    int select_len;
+
+    test_name_len = test_name.len();
+    select_len    = select.len();
+
+    for( int i = 0; i < test_name_len; i = i + 1 ) begin
+      if( test_name.substr(i, i + select_len - 1) == select )
+        return 1'b1;
+    end
+    return 1'b0;
+  endfunction
+
+  // ---------------------------------------------------------------------
+  // Line trace dumping
+  // ---------------------------------------------------------------------
+
+  // verilator lint_off UNUSEDSIGNAL
+  int    line_trace_fd;
+  logic  dump_line_traces;
+  string line_trace_filename;
+  // verilator lint_on UNUSEDSIGNAL
+  initial begin
+    if ( $value$plusargs( "dump-line-traces=%s", line_trace_filename ) ) begin
+      line_trace_fd    = $fopen (line_trace_filename, "w");
+      dump_line_traces = 1'b1;
+    end else begin
+      dump_line_traces = 1'b0;
+    end
+  end
+
+  // ---------------------------------------------------------------------
+  // Random Seeding
+  // ---------------------------------------------------------------------
+
+  // Seed random test cases
+  int seed = 32'hdeadbeef;
+  int dummy_var;
+
+  // ---------------------------------------------------------------------
+  // Cycle counter with timeout check
+  // ---------------------------------------------------------------------
+
+  int cycles;
+  int timeout = 10000;
+
+  always @( posedge clk ) begin
+
+    if ( rst )
+      cycles <= 0;
+    else
+      cycles <= cycles + 1;
+
+    if ( cycles > timeout ) begin
+      $write("\n");
+      $fatal("ERROR (cycles=%0d): timeout!", cycles );
+    end
+
+  end
+
+  //----------------------------------------------------------------------
+  // test_suite_begin
+  //----------------------------------------------------------------------
+
+  task test_suite_begin( string suitename );
+    $write("\n  %s%s%s", `PURPLE, suitename, `RESET);
+  endtask
+
+  //----------------------------------------------------------------------
+  // test_case_begin
+  //----------------------------------------------------------------------
+
+  // verilator lint_off UNUSEDSIGNAL
+  logic run_test;
+  logic test_running;
+  // verilator lint_on UNUSEDSIGNAL
+
+  initial run_test     = 1'b1;
+  initial test_running = 1'b0;
+
+  task test_case_begin( string taskname );
+    if( select_active & !contains( taskname ) ) begin
+      run_test = 1'b0;
+      return;
+    end else begin
+      run_test = 1'b1;
+    end
+
+    $write("\n    %s%s%s ", `BLUE, taskname, `RESET);
+    if ( verbose )
+      $write("\n");
+
+    if ( dump_line_traces )
+      $fdisplay( line_trace_fd, "\n=== %s ===", taskname );
+
+    if ( trace_header.len() > 0 ) begin
+      if ( dump_line_traces )
+        $fdisplay( line_trace_fd, trace_header );
+      if ( verbose )
+        $display( trace_header );
+    end
+
+    seed = 32'hdeadbeef;
+    dummy_var = $urandom(seed);
+    failed = 0;
+
+    rst = 1;
+    for( int i = 0; i < 3; i = i + 1 ) begin
+      @(posedge clk);
+    end
+    `ifndef BAGLSIM
+    #1;
+    `else
+    #(`INPUT_DELAY);
+    `endif
+    rst = 0;
+    test_running = 1'b1;
+  endtask
+
+  //----------------------------------------------------------------------
+  // test_case_end
+  //----------------------------------------------------------------------
+
+  task test_case_end();
+    test_running = 1'b0;
+  endtask
+
+  //----------------------------------------------------------------------
+  // trace
+  //----------------------------------------------------------------------
+
+  task trace( string msg_to_trace );
+    if( test_running ) begin
+      if( dump_line_traces )
+        $fdisplay( line_trace_fd, msg_to_trace );
+      if( verbose )
+        $display( msg_to_trace );
+    end
+  endtask
+
+endmodule
+
+//------------------------------------------------------------------------
+// CHECK_EQ
+//------------------------------------------------------------------------
+// Compare two expressions which can be signals or constants. We use the
+// XOR operator so that an X in __ref will match 0, 1, or X in __dut, but
+// an X in __dut will only match an X in __ref.
+
+`define CHECK_EQ( __dut, __ref )                                \
+  if ( __ref !== ( __ref ^ __dut ^ __ref ) ) begin              \
+    if ( t.verbose )                                            \
+      $display( "\n%sERROR%s (cycle=%0d): %s != %s (%x != %x)", \
+                `RED, `RESET, t.cycles, `"__dut`", `"__ref`",   \
+                __dut, __ref );                                 \
+    else                                                        \
+      $write( "%sF%s", `RED, `RESET );                          \
+    t.failed = 1;                                               \
+    TestEnv::TestStatus::test_fail();                           \
+  end                                                           \
+  else begin                                                    \
+    if ( !t.verbose )                                           \
+      $write( "%s.%s", `GREEN, `RESET );                        \
+  end                                                           \
+  if (1)
+
+`define CHECK_EQ_SET( __dut, __refs, __refs_val )                                   \
+  begin                                                                             \
+    int match_found;                                                                \
+    match_found = 0;                                                                \
+    foreach ( __refs[i] ) begin                                                     \
+      if ( __refs_val[i] && __refs[i] === ( __refs[i] ^ __dut ^ __refs[i] ) ) begin \
+        match_found = 1;                                                            \
+        break;                                                                      \
+      end                                                                           \
+    end                                                                             \
+    if( match_found == 0 ) begin                                                    \
+      if ( t.verbose )                                                              \
+        $display( "\n%sERROR%s (cycle=%0d): %s not in set %s (%h)",                 \
+                  `RED, `RESET, t.cycles, `"__dut`",                                \
+                  `"__refs`", __dut );                                              \
+      else                                                                          \
+        $write( "%sF%s", `RED, `RESET );                                            \
+      t.failed = 1;                                                                 \
+      TestEnv::TestStatus::test_fail();                                             \
+    end else begin                                                                  \
+      if ( !t.verbose )                                                             \
+        $write( "%s.%s", `GREEN, `RESET );                                          \
+    end                                                                             \
+  end
+
+`define CHECK_DEL_EQ_Q( __dut_q, __ref )                            \
+  begin                                                             \
+    automatic int match_found = 0;                                  \
+    foreach ( __dut_q[i] ) begin                                    \
+      if ( __ref === ( __ref ^ __dut_q[i] ^ __ref ) ) begin         \
+        match_found = 1;                                            \
+        __dut_q.delete(i);                                          \
+        break;                                                      \
+      end                                                           \
+    end                                                             \
+    if( match_found == 0 ) begin                                    \
+      if ( t.verbose )                                              \
+        $display( "\n%sERROR%s (cycle=%0d): %s (%b) not found in trace queue %s", \
+                  `RED, `RESET, t.cycles, `"__ref`", __ref,         \
+                  `"__dut_q`");                                     \
+      else                                                          \
+        $write( "%sF%s", `RED, `RESET );                            \
+      t.failed = 1;                                                 \
+      TestEnv::TestStatus::test_fail();                             \
+    end else begin                                                  \
+      if ( !t.verbose )                                             \
+        $write( "%s.%s", `GREEN, `RESET );                          \
+    end                                                             \
+  end
+
+`endif // TEST_TEST_UTILS_V

@@ -1,0 +1,15 @@
+# ========================================================================
+# CMakeVerilogCompiler.cmake.in
+# ========================================================================
+# Sets up our Verilog compiler
+
+set(CMAKE_Verilog_COMPILER "@CMAKE_Verilog_COMPILER@")
+set(CMAKE_Verilog_COMPILER_ID "@CMAKE_Verilog_COMPILER_ID@")
+set(CMAKE_Verilog_DPI_INCLUDES "@CMAKE_Verilog_DPI_INCLUDES@")
+set(CMAKE_Verilog_BUNDLER "@CMAKE_Verilog_BUNDLER@")
+set(CMAKE_Verilog_IMPLICIT_LINK_LIBRARIES "@CMAKE_Verilog_IMPLICIT_LINK_LIBRARIES@")
+set(CMAKE_Verilog_LINKER_PREFERENCE "@CMAKE_Verilog_LINKER_PREFERENCE@")
+set(CMAKE_Verilog_COMPILER_LOADED 1)
+set(CMAKE_Verilog_SOURCE_FILE_EXTENSIONS @CMAKE_Verilog_SOURCE_FILE_EXTENSIONS@)
+set(CMAKE_Verilog_OUTPUT_EXTENSION @CMAKE_Verilog_OUTPUT_EXTENSION@)
+set(CMAKE_Verilog_COMPILER_ENV_VAR "@CMAKE_Verilog_COMPILER_ENV_VAR@")

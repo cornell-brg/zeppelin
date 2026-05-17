@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+#=========================================================================
+# lint
+#=========================================================================
+# A helper script for linting Zeppelin's components
+
+RED='\033[1;31m'
+GREEN='\033[1;32m'
+BLUE='\033[1;34m'
+RESET='\033[0m'
+
+info() {
+    echo -e "${BLUE}[INFO]${RESET} $1"
+}
+
+error() {
+    echo -e "${RED}[ERROR]${RESET} $1"
+}
+
+success() {
+    echo -e "${GREEN}[SUCCESS]${RESET} $1"
+}
+
+#-------------------------------------------------------------------------
+# Lint with Verilator
+#-------------------------------------------------------------------------
+# Only lint from the tests (others may throw issues due to interfaces not
+# being driven from both sides)
+
+if command -v verilator 2>&1 >/dev/null; then
+  info "Linting with Verilator..."
+  find . -name "*_test.v" -print0 -o -name "*_sim.v" -print0 | xargs -0 -n 1 -P 0 verilator --lint-only -Wall --timing -sv --quiet-stats verilator_waivers.vlt
+  if [ $? != 0 ]; then
+    error "Not lint clean"
+    exit 1
+  fi
+  success "Lint clean!"
+else
+  info "Not linting with Verilator (couldn't find)"
+fi
