@@ -7,8 +7,8 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "Zeppelin"
-copyright = "2026, Aidan McNay & Parker Schless"
-author = "Aidan McNay & Parker Schless"
+copyright = "2026, Parker Schless"
+author = "Parker Schless"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
