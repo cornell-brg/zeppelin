@@ -1,14 +1,13 @@
 Assembler and Disassembler
 ==========================================================================
 
-In developing and verifying ZEPPELIN processors, a RISCV assembler and
-disassembler were also created in C++. The disassembler allowed instruction
-traces to clearly display instructions in the pipeline when being tested,
-and the assembler allowed processor tests to be written in assembly (being
-converted to bits before being used as a stimulus for the processor).
-These utilities were also used in the functional-level processor, which
-needed to be able to identify instructions in order to execute their
-semantics.
+For developing and verifying Zeppelin, a RISC-V assembler and
+disassembler are provided in C++. The disassembler lets instruction
+traces clearly display instructions in the pipeline during testing, and
+the assembler lets processor tests be written in assembly (converted to
+bits before being used as a stimulus for the processor). These utilities
+are also used inside the functional-level processor, which needs to
+identify instructions in order to execute their semantics.
 
 When developing these utilities, extensibility and performance were two
 main goals. Accordingly, the current implementation strives to achieve

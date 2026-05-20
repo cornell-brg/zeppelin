@@ -6,10 +6,8 @@
 Zeppelin Documentation
 ==========================================================================
 
-This is the home for Zeppelin's documentation, including installation, the
-overall framework, and how users can use and/or modify implementations.
-
-*Documentation is under construction - stay tuned for blank sections!*
+This is the home for Zeppelin's documentation, including the overall framework,
+microarchitecture, and how users can use and/or modify the implementation.
 
 .. toctree::
    :maxdepth: 1
@@ -17,10 +15,11 @@ overall framework, and how users can use and/or modify implementations.
 
    overview/motivation
    overview/data_flow
-   overview/versions
+   overview/overview
    overview/repository_structure
    overview/build_system
    overview/dependencies
+   overview/programming_guide
    overview/todo
 
 .. toctree::
@@ -41,17 +40,3 @@ overall framework, and how users can use and/or modify implementations.
 
    fl/assembler
    fl/proc
-
-.. toctree::
-   :maxdepth: 1
-   :caption: FPGA Implementation
-
-   fpga/peripherals
-   fpga/network
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Demonstrations
-
-   demos/sim_demo
-   demos/quartus_demo

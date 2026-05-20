@@ -85,9 +85,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/vlint.cmake)
 enable_testing()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-if(CMAKE_Verilog_COMPILER_ID STREQUAL "Verilator")
-  add_compile_definitions("ZEPPELIN_VERILATOR")
-elseif(CMAKE_Verilog_COMPILER_ID STREQUAL "VCS")
+if(CMAKE_Verilog_COMPILER_ID STREQUAL "VCS")
   add_compile_definitions("ZEPPELIN_VCS")
 elseif(CMAKE_Verilog_COMPILER_ID STREQUAL "Iverilog")
   message(WARNING

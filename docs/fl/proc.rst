@@ -1,18 +1,18 @@
 Functional-Level Processor
 ==========================================================================
 
-In addition to the RTL processor implementations, a functional-level (FL)
-processor was developed with RV32IM support. This processor implementation
-was aimed towards testing, and served two purposes:
+In addition to the RTL Zeppelin processor, a functional-level (FL)
+processor is provided with RV32IM support. This implementation is aimed
+at testing and serves two purposes:
 
 * Verification of tests with specified inputs and outputs (directed
   testing)
 * For any given input stream, production of expected outputs to compare
   with RTL model outputs (golden reference model testing)
 
-In addition to testing, the FL processor could run programs as a
-standalone ISA simulator, to verify their functionality before being
-run on hardward models.
+In addition to testing, the FL processor can run programs as a
+standalone ISA simulator (the ``fl-sim`` binary), to verify their
+functionality before being run on hardware models.
 
 Helper Classes
 --------------------------------------------------------------------------
@@ -57,11 +57,12 @@ access to forward requests appropriately instead of storing data normally.
 Peripherals (``FLPeripheral``)
 """"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-In ZEPPELIN, all peripheral devices are memory-mapped. For the FL processor,
+In Zeppelin, all peripheral devices are memory-mapped. For the FL processor,
 these are implemented as derived classes of ``FLPeripheral``. The base
-class provides a common interface for for accesses; namely, ``try_read``
-and ``try_right`` check whether a request is directed for the peripheral,
-and perform the operation if so (returning whether the peripheral was used).
+class provides a common interface for accesses; namely, ``try_read``
+and ``try_write`` check whether a request is directed at the peripheral,
+and perform the operation if so (returning whether the peripheral was
+used).
 
 Derived classes must implement three functions:
 
@@ -198,7 +199,7 @@ mappings (see ``tools/rvelfdump.cpp``).
 For functional-level simulations, the top-level file is ``fl/fl_sim.cpp``.
 This instantiates the functional-level processor, loads a binary using
 ``parse_elf``, and steps the execution of the processor until it fails
-(usually exiting first with the ``FLExit`` peripheral - see
-:doc:`../fpga/peripherals`). This enables us to cross-compile programs
-to RISCV and run them on the standalone ``fl-sim`` program, verifying
-the program's functionality before running it on an RTL processor.
+(usually exiting first with the ``FLExit`` peripheral). This enables us
+to cross-compile programs to RISCV and run them on the standalone
+``fl-sim`` program, verifying the program's functionality before running
+it on an RTL processor.

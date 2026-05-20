@@ -5,6 +5,7 @@
 
 #include "fl/FLProc.h"
 #include "fl/parse_elf.h"
+#include "fl/peripherals/FLExit.h"
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -65,6 +66,9 @@ int main( int argc, char* argv[] )
     FLTrace inst_trace = proc.step();
     if ( trace ) {
       dump_file << inst_trace << std::endl;
+    }
+    if ( FLExit::s_exit_requested ) {
+      return FLExit::s_exit_code;
     }
   }
 }

@@ -1,201 +1,110 @@
 Further Work
 ==========================================================================
 
-While Zeppelin has made lots of progress as both a processor and framework
-for processor development, there are still improvements that could be
-made
+Zeppelin has reached the point of running the full RV32IM ISA in a
+parameterizable superscalar configuration with optional out-of-order issue
+queues, but several known limitations remain. The items below capture the
+main avenues for future work; the project report goes into more detail on
+the motivation and tradeoff for each.
 
-Fixes
+Fetch Block Alignment Requirement Removal
 --------------------------------------------------------------------------
 
-These improvements seek to address issues or shortcomings in the current
-design, and should be prioritized over enhancements
+All instructions in a fetch block currently travel together through both
+the fetch unit and the decode-issue unit. When some lanes can dispatch
+while others cannot (e.g. a structural hazard on the iSLIP crossbar),
+the dispatching lanes are marked ``DISPATCHED`` in the DIUFifo head and
+the block remains parked until every lane has dispatched or been
+invalidated. The "dead" slots that result are wasted decode-issue
+bandwidth. A more advanced version would let the DIU pull in fresh
+instructions from the fetch unit to refill those slots so that decode
+issue can continue doing useful work without waiting for the slowest
+lane in the current block. This is a substantial change because it
+breaks the invariant that each fetch block has a single source PC and
+contiguous sequence numbers.
 
-Simplify Sequence Number Generation
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-
-Currently, the sequence generation units (``hw/fetch/SeqNumGen*``)
-maintain a vector representing which sequence numbers are in-flight
-(``seq_num_list``). This approach was taken when the exact semantics of
-sequence numbers were being defined, and allows for sequence numbers to
-be freed in any order. However, since sequence numbers are freed upon a
-commit (occuring in-order with respect to sequence numbers), this
-vector could be removed, with in-flight sequence numbers only needing
-a head and tail pointer to be represented. This would not only result
-in area savings, as well as a one-cycle saving by directly updating the
-tail pointer on a commit (instead of later reclaiming entries), but would
-cause the area associated with :math:`N` sequence numbers to scale overall
-as :math:`\log(N)`.
-
-Fix Memory Network Dependence
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-
-With the current memory network, there exists a possibility for deadlock
-due to a dependency chain between ``imem`` and ``dmem``:
-
- - A stalled fetch unit leads to a stalled ``FPGAMem``, since the response
-   cannot be taken
- - A stalled ``FPGAMem`` leads to a stalled memory XU, since the request
-   cannot be taken
- - A stalled memory XU (in the case of another memory transaction) leads
-   to a stalled pipeline, stalling the fetch unit
-
-Currently, this is resolved by placing FIFOs in the processor at the
-``imem`` and ``dmem`` ports to buffer responses. If these FIFOs are sized
-to the pipeline depth of the memory network (and assuming fair
-arbitration), the memory network won't stall; however, this approach isn't
-very modular and doesn't scale well.
-
-Instead, the dependency between ``imem`` and ``dmem`` in the memory
-network should be broken. Some ways to do this include:
-
- - Having separate pipelines for both channels in the memory (requiring
-   a dual-ported memory)
- - Having separate credits for both channels in the memory network, with
-   memory able to service the other channel if one is stalled
-
-SPI Enable
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-
-SPI communication is currently used to program the processor. However,
-unplugging the SPI lines once programming is finished (to allow the
-design to run on its own, not connected to a computer) can introduce
-noise that could be received and interpreted as a transaction by the SPI
-Minion. This behaviour was observed when testing and led to errors,
-especially if the "go" bit was written (stalling the processor). Instead,
-some mechanism outside of SPI should be introduced to enable SPI
-communication (perhaps a switch to enter "programming" mode), such that
-SPI programming can be disabled to allow an SPI channel to be disconnected.
-
-Functions vs. Tasks
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-
-In later versions of Verilator than those tested with, functions are
-(correctly) `not allowed to call tasks <https://verilator.org/guide/latest/warnings.html#cmdoption-arg-FUNCTIMECTL>`_.
-This behavior is currently violated by the calling of ``init_mem`` in
-the FL Memory (a task) by the corresponding function in the top-level
-processor simulators (where ``init_mem`` is a function). Either could
-be changed, but the best is likely to have the top-level simulators
-export ``init_mem`` as a task.
-
-(This error can be ignored by Verilator, but should be fixed instead to
-avoid unnecessary linting waivers)
-
-Enhancements
+Single-Cycle Branch Resolution Latency Requirement Removal
 --------------------------------------------------------------------------
 
-These improvements seek to expand the functionality of Zeppelin's processor
-models
+The control-flow execute pipe is forced into bypass-mode (its issue queue
+is purely combinational) so that branches resolve in the cycle after
+decode. This single-cycle latency requirement is what guarantees that no
+speculatively-fetched instructions can move past the DIU before the
+redirect arrives, which in turn means no XU or the WCU itself has to
+listen for squashes.
+
+The downside is that the control-flow pipe can never benefit from an issue
+queue, and any younger instruction in the same fetch block as an
+unresolved BRX is blocked at the DIU until the BRX dispatches. Removing
+this requirement would require:
+
+ - The XUs and the WCU all listening to ``ControlFlowNotif`` and squashing
+   anything younger than the redirecting instruction
+ - The memory XU keeping enough per-request state to drop squashed
+   in-flight loads/stores (likely an LSQ in an out-of-order design)
+ - Either a control-flow issue queue that can hold partial state, or a
+   centralized issue queue (see "True Out-of-Order Issue" below)
+
+In-Order Loads and Stores Requirement Removal
+--------------------------------------------------------------------------
+
+The load-store execute unit does not contain a load-store queue, so memory
+ordering is enforced by forcing the memory pipe's issue queue to the
+in-order variant. Adding a proper LSQ to the LSU would let memory
+operations participate in out-of-order issue and would also be the natural
+place to handle squashes of in-flight memory requests once the single-cycle
+branch resolution requirement is lifted.
+
+Support for True Out-of-Order Issue
+--------------------------------------------------------------------------
+
+Out-of-order issue queues exist (``IssueQueueOOO``) and demonstrably win
+on synthetic benchmarks like the ``oooiq-demo``, but the per-pipe layout
+limits how often reordering actually happens in real programs. Because
+instructions are routed to a specific pipe's queue *before* their source
+operands are known to be ready, one queue can fill up while another
+identical pipe's queue is idle. To get true out-of-order issue out of the
+hardware, the DIU likely needs to switch to a centralized issue queue
+that is enqueued before pipe mapping and dispatches on dequeue. That
+requires a more intelligent scheduler that can pull non-consecutive
+ready instructions, and likely better compiler support so independent
+instructions land close enough together to benefit.
 
 Privileged ISA Support
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+--------------------------------------------------------------------------
 
-While the current ISA can support many programs, it lacks the support for
-operating system-level control. For this, the privileged RISCV ISA would
-need to be implemented, with support for CSRs (and their effects) as well
-as exceptions and interrupts. The basic CSRs needed for this would be
-``mtvec``, ``mepc``, ``mcause``, and ``mstatus`` (for interrupts);
-however, many more may wish to be implemented for various operating
-systems, such as hardware privilege modes. A good reference/goal for
-minimal support would be those necessary to run `EGOS 2000 <https://github.com/yhzhang0128/egos-2000>`_,
-also developed at Cornell.
+The current ISA is RV32IM (no exceptions, no privilege modes). For
+operating-system-style workloads, the privileged RISC-V ISA would need
+to be implemented along with the CSRs and their semantics. A useful
+target would be the CSRs needed to run
+`EGOS-2000 <https://github.com/yhzhang0128/egos-2000>`_: at minimum
+``mtvec``, ``mepc``, ``mcause``, ``mstatus``, ``mhartid``,
+``mvendorid``, ``mscratch``, ``mip``, ``mie``, ``mtime``, ``mtimecmp``.
 
-.. admonition:: EGOS CSRs
-
-   Examining EGOS, the following CSRs (in addition to those listed
-   above) would be needed:
-
-   - ``mhartid``
-   - ``mvendorid``
-   - ``mscratch``
-   - ``mip``
-   - ``mie``
-   - ``mtime``
-   - ``mtimecmp``
-
-.. admonition:: Squashing Locations in the Processor
-   :class: note
-
-   Recall from the Version 6 processor that currently, we can limit
-   the scope of squashing by handling all control flow instruction
-   in one cycle, ensuring that no potentially-squashed instructions make
-   it past the DIU. However, interrupt/exception handling breaks this
-   assumption (particularly exceptions, which would be handled in the
-   WCU).
-
-   Before implementing the privileged ISA, Zeppelin will need to support
-   squashing of instructions *anywhere* in the pipeline, including
-   in XUs and the WCU (specifically the ROB) through squash notifications.
-   While this requires many additional modules to be implemented, many
-   should require minimal changes compared to existing versions, with
-   a notable exception being the memory XU (to keep track of in-flight
-   requests to determine which should be squashed, likely using an LSQ
-   in an out-of-order architecture). However, it would also have the
-   benefit of making the system more modular by removing the assumption
-   on control flow resolution time.
-
-Full Out-Of-Order Execution
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-
-Currently, Zeppelin only implements an out-of-order backend; this feature
-would extend out-of-order processing to include the DIU, making the
-processor fully out-of-order. This would require the addition of an issue
-queue in the DIU, which would likely tightly couple with the rename table
-to determine which registers have pending writes. The rename table would
-also have to be able to free specific pending writes based on their
-sequence number on a squash. Additionally, the memory XU would now
-require a load-store queue (LSQ) to resolve potential RAW hazards through
-memory (after some discussion, we determined that the best place for the
-LSQ to live is in an execute unit).
-
-This change would also imply that instructions could be squashed anywhere
-in the pipeline; see the note above.
-
-Superscalar Pipeline Support
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
-
-Zeppelin currently only supports a single-issue pipeline; however, the
-methodology supports a superscalar pipeline. For this, the best way to
-modify the pipeline (ensuring backwards compatibility) would be to have
-units take a parametrized array of interfaces (ex. for multiple
-instructions being fetched at once, the FU would drive an array of ``F__D``
-interfaces).
-
-The easiest path to implementation would be to start from the back of
-the processor, and gradually replace each interface with a parametrized
-array, modifying all of the units that it touches (i.e. support an
-array of ``Commit`` notifications before worrying about multiple issue).
-
-.. admonition:: Fairness
-   :class: note
-
-   Currently, a round-robin arbiter is used at in the WCU to ensure that
-   all execute units are treated fairly and can make progress towards
-   committing their instruction. Maintaining this arbitration may scale
-   difficulty as the WCU supports multiple instructions; however, it's
-   not necessary to keep this selection fair. Fairness is likely useful
-   from a performance standpoint; however, the WCU could instead have
-   a fixed preference, knowing that other execute units will eventually
-   make progress (as dependent instructions would stall in the DIU).
-   Having such a fixed priority wasn't adopted for single-issue versions
-   as arbitrating was relatively simple; however, larger designs may
-   prefer a fixed priority over fairly arbitrating N instructions to
-   complete, as the lesser complexity is likely worth the slight
-   performance decrease.
-
-This change would also imply that instructions could make it into the
-pipeline at the same time as control flow instructions that would want
-to squash them; see the note on squashing above.
+This work is tightly coupled to the squashing changes above, since
+exceptions in the WCU break the "speculation never escapes the DIU"
+invariant in the same way that multi-cycle branch resolution would.
 
 Formal Verification
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+--------------------------------------------------------------------------
 
-While Zeppelin is extensively verified through unit and integration testing,
-both the directed and golden tests are user-specified. An ongoing effort
-has been to create formal models of each instruction, such that processors
-can be `formally verified <https://github.com/SymbioticEDA/riscv-formal>`_.
-For this, the existing ``InstTraceNotif`` interface (for producing an
-instruction trace and verifying against the FL model) would need to be
-replaced with the `RVFI Interface <https://github.com/SymbioticEDA/riscv-formal/blob/master/docs/rvfi.md>`_,
-to hook into RISCV's formal verification framework.
+Zeppelin is verified through extensive unit and integration testing,
+including ELF-based golden-reference checks against the FL processor and
+randomized RISC-V instruction tests driven by
+`riscv-dv <https://github.com/chipsalliance/riscv-dv>`_. The next step
+in verification rigor would be replacing (or augmenting) the
+``InstTraceNotif`` with the
+`RVFI interface <https://github.com/SymbioticEDA/riscv-formal/blob/master/docs/rvfi.md>`_
+so the design can be formally checked against the RISC-V formal model.
 
+Sequence Number Generator Simplification
+--------------------------------------------------------------------------
+
+``SeqNumGen`` currently tracks in-flight sequence numbers with a bitmap
+(``seq_num_list``) so that numbers can be freed in any order. In practice
+numbers are freed on commit, which is in order with respect to the
+sequence-number space, so a head/tail-pointer-based FIFO would suffice
+and would scale as :math:`\log(N)` instead of :math:`N` for the number
+of sequence numbers. The bitmap is a holdover from when the exact
+semantics of sequence numbers were still being worked out and is worth
+replacing.

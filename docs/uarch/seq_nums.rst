@@ -1,6 +1,13 @@
 Sequence Numbers
 ==========================================================================
 
+.. note::
+
+   This page is adapted from the
+   `Blimp documentation <https://cornell-brg.github.io/blimp/>`_, since
+   the sequence-number scheme described here was originally developed
+   for Blimp and is reused largely unchanged in Zeppelin.
+
 As part of the modular, out-of-order architecture, Zeppelin needs a way to
 keep track of a global ordering between instructions. This is used to
 reorder instructions in the WCU, as well as to compare ages of

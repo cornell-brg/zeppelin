@@ -29,7 +29,7 @@ From there, users can run any individual test by specifying its name as a
 target:
 
 ```bash
-make Zeppelin_add_test
+make zeppelin-add-test
 ```
 
 Known tests can be listed with the `list` target.

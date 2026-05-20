@@ -1,7 +1,7 @@
 Dependencies
 ==========================================================================
 
-ZEPPELIN requires the following:
+Zeppelin requires the following:
 
 * `CMake <https://cmake.org/>`_ (as well as any preferred backend, such as
   Ninja)
@@ -29,5 +29,9 @@ needed at this time.
 
 .. admonition:: Verilator Version
 
-   Currently, Zeppelin will throw errors with the current version of Verilator
-   due to the use of tasks inside of a function - see :doc:`todo`
+   Recent Verilator releases disallow function calls into tasks (see the
+   `FUNCTIMECTL <https://verilator.org/guide/latest/warnings.html#cmdoption-arg-FUNCTIMECTL>`_
+   warning). The ``init_mem`` flow in the simulator wrappers triggers this
+   on un-waived builds; the project waiver file
+   (``verilator_waivers.vlt``) suppresses it, but the underlying call
+   shape should eventually be cleaned up.
