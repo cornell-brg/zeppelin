@@ -1,11 +1,11 @@
 //========================================================================
-// IterativeMulDivRemL7.v
+// IterativeMulDivRem.v
 //========================================================================
 // An iterative unit capable of computing a multiply, division, or
 // remainder
 
-`ifndef HW_EXECUTE_EXECUTE_VARIANTS_L7_ITERATIVEMULDIVREML7_V
-`define HW_EXECUTE_EXECUTE_VARIANTS_L7_ITERATIVEMULDIVREML7_V
+`ifndef HW_EXECUTE_EXECUTE_VARIANTS_ITERATIVEMULDIVREM_V
+`define HW_EXECUTE_EXECUTE_VARIANTS_ITERATIVEMULDIVREM_V
 
 `include "defs/UArch.v"
 `include "hw/common/Fifo.v"
@@ -16,11 +16,11 @@
 import UArch::*;
 
 //------------------------------------------------------------------------
-// IterativeMulDivRemStepL7
+// IterativeMulDivRemStep
 //------------------------------------------------------------------------
 // Computes one "step" of the multiplication, based on our operation
 
-module IterativeMulDivRemStepL7 (
+module IterativeMulDivRemStep (
   input  logic [63:0] a,
   input  logic [63:0] b,
   input  logic [32:0] b_shift, // Used for division/remainder
@@ -127,10 +127,10 @@ module IterativeMulDivRemStepL7 (
 endmodule
 
 //------------------------------------------------------------------------
-// IterativeMulDivRemL7
+// IterativeMulDivRem
 //------------------------------------------------------------------------
 
-module IterativeMulDivRemL7 #(
+module IterativeMulDivRem #(
   parameter p_d_intf_fifo_depth = 1
 )(
   input  logic clk,
@@ -347,7 +347,7 @@ module IterativeMulDivRemL7 #(
     end
   end
 
-  IterativeMulDivRemStepL7 mul_div_rem_step (
+  IterativeMulDivRemStep mul_div_rem_step (
     .a       (opa),
     .b       (opb),
     .b_shift (b_shift),
@@ -412,7 +412,7 @@ module IterativeMulDivRemL7 #(
       return "D";
   endfunction
 
-  // Plain-net mirrors of interface signals read by trace(). See ALUL6 for
+  // Plain-net mirrors of interface signals read by trace(). See ALU for
   // rationale (VCS sensitivity does not propagate through modport reads inside
   // function bodies).
   logic                      w_val_mir;
@@ -468,4 +468,4 @@ module IterativeMulDivRemL7 #(
 
 endmodule
 
-`endif // HW_EXECUTE_EXECUTE_VARIANTS_L7_PIPELINEDMULTIPLIERL7_V
+`endif // HW_EXECUTE_EXECUTE_VARIANTS_PIPELINEDMULTIPLIER_V

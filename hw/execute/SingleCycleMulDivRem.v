@@ -1,12 +1,12 @@
 //========================================================================
-// SingleCycleMulDivRemL7.v
+// SingleCycleMulDivRem.v
 //========================================================================
 // A single-cycle unit capable of computing a multiply, division, or
-// remainder. Drop-in replacement for IterativeMulDivRemL7 with the same
+// remainder. Drop-in replacement for IterativeMulDivRem with the same
 // D__XIntf / X__WIntf interface but purely combinational datapath.
 
-`ifndef HW_EXECUTE_EXECUTE_VARIANTS_L7_SINGLECYCLEMULDIVREML7_V
-`define HW_EXECUTE_EXECUTE_VARIANTS_L7_SINGLECYCLEMULDIVREML7_V
+`ifndef HW_EXECUTE_EXECUTE_VARIANTS_SINGLECYCLEMULDIVREM_V
+`define HW_EXECUTE_EXECUTE_VARIANTS_SINGLECYCLEMULDIVREM_V
 
 `include "defs/UArch.v"
 `include "hw/common/Fifo.v"
@@ -16,7 +16,7 @@
 
 import UArch::*;
 
-module SingleCycleMulDivRemL7 #(
+module SingleCycleMulDivRem #(
   parameter p_d_intf_fifo_depth = 1
 )(
   input  logic clk,
@@ -226,7 +226,7 @@ module SingleCycleMulDivRemL7 #(
     return (val / 4) + ((val % 4) > 0 ? 1 : 0);
   endfunction
 
-  // Plain-net mirrors of interface signals read by trace(). See ALUL6 for
+  // Plain-net mirrors of interface signals read by trace(). See ALU for
   // rationale (VCS sensitivity workaround).
   logic                      w_val_mir;
   logic                      w_rdy_mir;
@@ -279,4 +279,4 @@ module SingleCycleMulDivRemL7 #(
 
 endmodule
 
-`endif // HW_EXECUTE_EXECUTE_VARIANTS_L7_SINGLECYCLEMULDIVREML7_V
+`endif // HW_EXECUTE_EXECUTE_VARIANTS_SINGLECYCLEMULDIVREM_V

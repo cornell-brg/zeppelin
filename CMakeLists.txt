@@ -75,7 +75,7 @@ cmake_minimum_required(VERSION 3.10)
 project(
   ZEPPELIN 
   VERSION 1.0
-  DESCRIPTION "ZEPPELIN: BRG's Luculently-Interfaced Modular Processor"
+  DESCRIPTION "Zeppelin: BRG's Modular Superscalar Processor"
   LANGUAGES Verilog C CXX ASM
 )
 
@@ -144,17 +144,17 @@ function(remove_extension VARNAME FILE_NAME)
 endfunction()
 
 #------------------------------------------------------------------------
-# version_name
+# proc_name
 #------------------------------------------------------------------------
 # A function to get the version indicator from a Zeppelin version
 
-function(version_name VNAME ZEPPELIN_VERSION)
-  if(ZEPPELIN_VERSION STREQUAL "FLProc")
+function(proc_name VNAME PROC)
+  if(PROC STREQUAL "FLProc")
     set(${VNAME} "fl" PARENT_SCOPE)
-  elseif(ZEPPELIN_VERSION STREQUAL "Zeppelin")
+  elseif(PROC STREQUAL "Zeppelin")
     set(${VNAME} "zeppelin" PARENT_SCOPE)
   else()
-    set(${VNAME} ${ZEPPELIN_VERSION} PARENT_SCOPE)
+    set(${VNAME} ${PROC} PARENT_SCOPE)
   endif()
 endfunction()
 
@@ -171,6 +171,22 @@ function(sim_name SIMNAME FILE_NAME)
     string(REGEX REPLACE "_sim\\.v$" "-sim" SIM_NAME ${FILE_NAME})
     string(TOLOWER ${SIM_NAME} SIM_NAME)
     set(${SIMNAME} ${SIM_NAME} PARENT_SCOPE)
+  endif()
+endfunction()
+
+#------------------------------------------------------------------------
+# test_name
+#------------------------------------------------------------------------
+# A function to convert a test Verilog file name to an executable name.
+# Zeppelin_<inst>_test.v becomes zeppelin-<inst>-test; other test files
+# keep the original filename (sans extension) as the binary name.
+
+function(test_name TESTNAME FILE_NAME)
+  if(FILE_NAME MATCHES "^Zeppelin_(.+)_test\\.v$")
+    set(${TESTNAME} "zeppelin-${CMAKE_MATCH_1}-test" PARENT_SCOPE)
+  else()
+    remove_extension(TEST_BIN ${FILE_NAME})
+    set(${TESTNAME} ${TEST_BIN} PARENT_SCOPE)
   endif()
 endfunction()
 
@@ -208,11 +224,11 @@ target_compile_options(FL_PROC PRIVATE -O3 -Wall -Wextra -Wpedantic -Werror)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/hw/top/test/tests.cmake)
 
-foreach(ZEPPELIN_VERSION ${PROCS})
-  add_prefix(${ZEPPELIN_VERSION}_TESTS "hw/top/test/")
+foreach(PROC ${PROCS})
+  add_prefix(${PROC}_TESTS "hw/top/test/")
   set(V_TEST_FILES
     ${V_TEST_FILES}
-    ${${ZEPPELIN_VERSION}_TESTS}
+    ${${PROC}_TESTS}
   )
 endforeach()
 
@@ -233,15 +249,15 @@ endif()
 #------------------------------------------------------------------------
 
 add_custom_target(check COMMAND "ctest")
-foreach(ZEPPELIN_VERSION ${PROCS})
-  version_name(ZEPPELIN_VERSION_SHORT ${ZEPPELIN_VERSION})
-  add_custom_target(check-${ZEPPELIN_VERSION_SHORT} COMMAND "ctest" "-L" "${ZEPPELIN_VERSION}")
+foreach(PROC ${PROCS})
+  proc_name(PROC_SHORT ${PROC})
+  add_custom_target(check-${PROC_SHORT} COMMAND "ctest" "-L" "${PROC}")
 endforeach()
 
 foreach(V_TEST_FILE_REL_PATH ${V_TEST_FILES})
   set(V_TEST_FILE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/${V_TEST_FILE_REL_PATH}")
   get_leaf(V_TEST_FILE ${V_TEST_FILE_PATH})
-  remove_extension(V_TEST_BIN ${V_TEST_FILE})
+  test_name(V_TEST_BIN ${V_TEST_FILE})
 
   if(${V_TEST_FILE_REL_PATH} IN_LIST ELF_V_TEST_FILES)
     add_executable(${V_TEST_BIN} ${V_TEST_FILE_PATH} "hw/top/test/utils/load_elf_test.cpp")
@@ -308,13 +324,13 @@ foreach(V_TEST_FILE_REL_PATH ${V_TEST_FILES})
   )
 
   # Include check commands for each version
-  foreach(ZEPPELIN_VERSION ${PROCS})
-    if(${V_TEST_FILE_REL_PATH} IN_LIST ${ZEPPELIN_VERSION}_TESTS)
-      version_name(ZEPPELIN_VERSION_SHORT ${ZEPPELIN_VERSION})
-      add_dependencies(check-${ZEPPELIN_VERSION_SHORT} ${V_TEST_BIN})
-      set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${ZEPPELIN_VERSION}")
+  foreach(PROC ${PROCS})
+    if(${V_TEST_FILE_REL_PATH} IN_LIST ${PROC}_TESTS)
+      proc_name(PROC_SHORT ${PROC})
+      add_dependencies(check-${PROC_SHORT} ${V_TEST_BIN})
+      set_tests_properties(${TEST_NAME} PROPERTIES LABELS "${PROC}")
     endif()
-  endforeach(ZEPPELIN_VERSION)
+  endforeach(PROC)
 endforeach(V_TEST_FILE_REL_PATH)
 
 #------------------------------------------------------------------------
@@ -327,7 +343,8 @@ endforeach(V_TEST_FILE_REL_PATH)
 
 add_custom_target(riscv-dv-elf-tests)
 foreach(ELF_SUITE_FILE_REL ${ELF_SUITE_FILES})
-  get_filename_component(ELF_SUITE_BIN ${ELF_SUITE_FILE_REL} NAME_WE)
+  get_filename_component(ELF_SUITE_FILE ${ELF_SUITE_FILE_REL} NAME)
+  test_name(ELF_SUITE_BIN ${ELF_SUITE_FILE})
   add_dependencies(riscv-dv-elf-tests ${ELF_SUITE_BIN})
 endforeach()
 

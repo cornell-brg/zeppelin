@@ -13,7 +13,6 @@ add_compile_definitions(BUILTIN)
 
 set(APP_SUBDIRS
   adventure
-  demo
   echo
   hello
   sqrt
